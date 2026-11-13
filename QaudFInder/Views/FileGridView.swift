@@ -6,8 +6,9 @@
 //  - 클릭 / ⌘클릭 / ⇧클릭 선택, 빈 곳에서 끌어서 범위 선택(러버밴드)
 //  - 방향키 ←→↑↓ 이동, ⇧+방향키 범위 선택, ⌘A 전체 선택
 //  직접 덧붙인 것
-//  - 여러 파일 한꺼번에 끌기 (항상 "복사"로만 끌림)
-//  - 더블클릭·Return·⌘↓ 열기, ⌘↑ 상위 폴더, 스페이스 훑어보기, Tab 다음 칸
+//  - 여러 파일 한꺼번에 끌기: 그냥 끌면 복사, ⌘ 누른 채 끌면 이동 (Finder로 끌 때는 항상 복사)
+//  - 더블클릭 열기, 단축키·우클릭 메뉴 (ListSupport.swift의 ListKey, FileCommands)
+//  - 이름 바꾸기: Return을 누르면 이름 글자가 그 자리에서 편집 상태가 됨
 //  - 이름 입력으로 바로 찾기 (type-select)
 //
 
@@ -43,15 +44,21 @@ struct FileGridView: NSViewRepresentable {
         grid.dataSource = c
         grid.delegate = c
 
-        // 끌기: 항상 "복사"만 허용 / 놓기: 다른 곳의 파일을 받음
-        grid.setDraggingSourceOperationMask(.copy, forLocal: true)
+        // 끌기: 앱 안(다른 칸)으로는 복사·이동 가능, 바깥으로는 항상 "복사"만 / 놓기: 다른 곳의 파일을 받음
+        grid.setDraggingSourceOperationMask([.copy, .move, .generic], forLocal: true)
         grid.setDraggingSourceOperationMask(.copy, forLocal: false)
         grid.registerForDraggedTypes([.fileURL])
 
-        grid.preview.model = model
+        let commands = grid.commands
+        commands.model = model
+        commands.host = c
+        commands.events = events
+        grid.menu = commands.menu                       // 우클릭 메뉴
         grid.onMouseDown = { [weak c] in c?.parent.events.mouseDown() }
         grid.onBecameFirstResponder = { [weak c] in c?.parent.events.becameActive() }
-        grid.onKey = { [weak c] key in c?.handle(key) }
+        grid.onKey = { [weak commands] key in commands?.handle(key) }
+        c.renamer.onCommit = { [weak c] url, name in c?.parent.model.rename(url, to: name) }
+        c.renamer.onFinish = { [weak grid] in grid?.window?.makeFirstResponder(grid) }
         grid.onDoubleClick = { [weak c] index in c?.openItem(at: index) }
         grid.onTypeSelect = { [weak c] text in c?.typeSelect(text) }
         grid.isActivePane = isActive
@@ -69,14 +76,16 @@ struct FileGridView: NSViewRepresentable {
         context.coordinator.parent = self
         context.coordinator.apply(model: model)
         context.coordinator.grid?.isActivePane = isActive
+        context.coordinator.grid?.commands.events = events
     }
 
     // MARK: - 컬렉션 뷰와 모델(PaneModel) 사이를 이어 주는 연결자
 
     @MainActor
-    final class Coordinator: NSObject, NSCollectionViewDataSource, NSCollectionViewDelegate {
+    final class Coordinator: NSObject, NSCollectionViewDataSource, NSCollectionViewDelegate, FileListHost {
         var parent: FileGridView
         weak var grid: FileCollection?
+        let renamer = RenameEditor()
         private var items: [FileItem] = []
 
         init(_ parent: FileGridView) {
@@ -100,15 +109,40 @@ struct FileGridView: NSViewRepresentable {
             }
         }
 
-        func handle(_ key: ListKey) {
-            guard let grid else { return }
-            switch key {
-            case .preview: grid.preview.toggle()
-            case .open:    parent.model.activate(grid.selectionIndexPaths.map { items[$0.item].url })
-            case .goUp:    parent.model.goUp()
-            case .tab(let backward): parent.events.tab(backward)
-            case .escape:  parent.events.escape()
+        // MARK: FileListHost (단축키·우클릭 메뉴가 쓰는 것)
+
+        var selectedURLs: [URL] {
+            guard let grid else { return [] }
+            return grid.selectionIndexPaths.sorted().compactMap { $0.item < items.count ? items[$0.item].url : nil }
+        }
+
+        func syncFromModel() {
+            apply(model: parent.model)
+        }
+
+        func prepareContextMenu() -> Bool {
+            guard let grid else { return false }
+            grid.window?.makeFirstResponder(grid)
+            guard let point = grid.lastMenuPoint,
+                  let path = grid.indexPathForItem(at: point), path.item < items.count else {
+                grid.selectionIndexPaths = []           // 빈 곳 우클릭: 선택 해제
+                selectionChanged(last: nil)
+                return false
             }
+            if !grid.selectionIndexPaths.contains(path) {
+                grid.selectionIndexPaths = [path]
+                selectionChanged(last: path)
+            }
+            return true
+        }
+
+        func beginRename(_ url: URL) {
+            guard let grid, let index = items.firstIndex(where: { $0.url == url }) else { return }
+            let path = IndexPath(item: index, section: 0)
+            grid.scrollToItems(at: [path], scrollPosition: .nearestHorizontalEdge)
+            grid.layoutSubtreeIfNeeded()
+            guard let item = grid.item(at: path) as? IconItem else { return }
+            renamer.begin(field: item.nameField, url: url)
         }
 
         func openItem(at index: Int) {
@@ -160,7 +194,7 @@ struct FileGridView: NSViewRepresentable {
             var anchor = parent.model.previewTarget
             if let last, last.item < items.count { anchor = items[last.item].url }
             parent.model.setSelection(urls, anchor: anchor)
-            grid.preview.refresh()
+            grid.commands.preview.refresh()
         }
 
         // MARK: 끌기 (여러 파일 가능)
@@ -174,7 +208,7 @@ struct FileGridView: NSViewRepresentable {
             return items[indexPath.item].url as NSURL
         }
 
-        // MARK: 놓기 (항상 이 칸의 현재 폴더로 복사)
+        // MARK: 놓기 (이 칸의 현재 폴더로 복사, ⌘ 누르고 끌어 왔으면 이동)
 
         func collectionView(_ collectionView: NSCollectionView, validateDrop draggingInfo: any NSDraggingInfo,
                             proposedIndexPath proposedDropIndexPath: AutoreleasingUnsafeMutablePointer<NSIndexPath>,
@@ -189,7 +223,7 @@ struct FileGridView: NSViewRepresentable {
             proposedDropIndexPath.pointee = NSIndexPath(forItem: items.count, inSection: 0)
             proposedDropOperation.pointee = .before
             grid?.isDropHighlighted = true
-            return .copy
+            return dropWantsMove(draggingInfo) ? .move : .copy
         }
 
         func collectionView(_ collectionView: NSCollectionView, acceptDrop draggingInfo: any NSDraggingInfo,
@@ -197,7 +231,11 @@ struct FileGridView: NSViewRepresentable {
             grid?.isDropHighlighted = false
             let urls = draggedFileURLs(draggingInfo)
             guard !urls.isEmpty else { return false }
-            parent.model.copyIn(urls)
+            if dropWantsMove(draggingInfo) {
+                parent.model.moveIn(urls)
+            } else {
+                parent.model.copyIn(urls)
+            }
             return true
         }
     }
@@ -211,6 +249,7 @@ final class IconItem: NSCollectionViewItem {
     private let iconBackground = NSView()
     private let icon = NSImageView()
     private let label = NSTextField(wrappingLabelWithString: "")
+    var nameField: NSTextField { label }                 // 이름 바꾸기 때 편집할 글자 칸
 
     override func loadView() {
         let root = NSView(frame: NSRect(x: 0, y: 0, width: 88, height: 96))
@@ -285,7 +324,8 @@ final class FileCollection: NSCollectionView {
     var onKey: ((ListKey) -> Void)?
     var onDoubleClick: ((Int) -> Void)?
     var onTypeSelect: ((String) -> Void)?
-    let preview = PreviewController()
+    let commands = FileCommands()
+    private(set) var lastMenuPoint: NSPoint?           // 우클릭한 위치
 
     private var typed = ""
     private var lastTypedAt = Date.distantPast
@@ -307,7 +347,7 @@ final class FileCollection: NSCollectionView {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        preview.keyTarget = self
+        commands.preview.keyTarget = self
         if isActivePane { takeFocus() }
     }
 
@@ -368,8 +408,17 @@ final class FileCollection: NSCollectionView {
         isDropHighlighted = false
     }
 
+    override func menu(for event: NSEvent) -> NSMenu? {
+        lastMenuPoint = convert(event.locationInWindow, from: nil)
+        return super.menu(for: event)
+    }
+
+    // 메뉴 막대의 편집 > 복사·붙여넣기(⌘C/⌘V)가 이쪽으로 올 때
+    @objc func copy(_ sender: Any?) { onKey?(.copy) }
+    @objc func paste(_ sender: Any?) { onKey?(.paste(move: false)) }
+
     // 훑어보기 창 연결
     override func acceptsPreviewPanelControl(_ panel: QLPreviewPanel!) -> Bool { true }
-    override func beginPreviewPanelControl(_ panel: QLPreviewPanel!) { preview.begin(panel) }
-    override func endPreviewPanelControl(_ panel: QLPreviewPanel!) { preview.end(panel) }
+    override func beginPreviewPanelControl(_ panel: QLPreviewPanel!) { commands.preview.begin(panel) }
+    override func endPreviewPanelControl(_ panel: QLPreviewPanel!) { commands.preview.end(panel) }
 }

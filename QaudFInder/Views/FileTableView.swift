@@ -8,9 +8,9 @@
 //  - 이름을 입력하면 그 파일로 바로 이동 (type-select)
 //  - 열 제목 클릭으로 정렬, 열 너비 기억
 //  직접 덧붙인 것
-//  - 여러 파일 한꺼번에 끌기 (항상 "복사"로만 끌림)
-//  - 스페이스: 훑어보기(창이 떠 있으면 방향키로 다른 파일) / Return·더블클릭·⌘↓: 열기 / ⌘↑: 상위 폴더
-//  - Tab: 다음 칸으로
+//  - 여러 파일 한꺼번에 끌기: 그냥 끌면 복사, ⌘ 누른 채 끌면 이동 (Finder로 끌 때는 항상 복사)
+//  - 단축키·우클릭 메뉴 (ListSupport.swift의 ListKey, FileCommands)
+//  - 이름 바꾸기: Return을 누르면 이름 글자가 그 자리에서 편집 상태가 됨
 //
 
 import SwiftUI
@@ -56,18 +56,25 @@ struct FileTableView: NSViewRepresentable {
         table.target = c
         table.doubleAction = #selector(Coordinator.doubleClicked(_:))
 
-        // 끌기: 다른 칸·Finder로 끌 때 항상 "복사"만 허용 (원본을 옮기거나 지우지 않음)
-        table.setDraggingSourceOperationMask(.copy, forLocal: true)
+        // 끌기: 앱 안(다른 칸)으로는 복사·이동 가능, Finder 등 바깥으로는 항상 "복사"만
+        table.setDraggingSourceOperationMask([.copy, .move, .generic], forLocal: true)
         table.setDraggingSourceOperationMask(.copy, forLocal: false)
         // 놓기: 다른 곳에서 끌어 온 파일을 받음
         table.registerForDraggedTypes([.fileURL])
         table.draggingDestinationFeedbackStyle = .regular
 
-        table.preview.model = model
+        let commands = table.commands
+        commands.model = model
+        commands.host = c
+        commands.events = events
+        table.menu = commands.menu                      // 우클릭 메뉴
         table.onMouseDown = { [weak c] in c?.parent.events.mouseDown() }
         table.onBecameFirstResponder = { [weak c] in c?.parent.events.becameActive() }
-        table.onKey = { [weak c] key in c?.handle(key) }
+        table.onKey = { [weak commands] key in commands?.handle(key) }
         table.isActivePane = isActive
+
+        c.renamer.onCommit = { [weak c] url, name in c?.parent.model.rename(url, to: name) }
+        c.renamer.onFinish = { [weak table] in table?.window?.makeFirstResponder(table) }
 
         let scroll = NSScrollView()
         scroll.documentView = table
@@ -83,6 +90,7 @@ struct FileTableView: NSViewRepresentable {
         context.coordinator.parent = self
         context.coordinator.apply(model: model)
         context.coordinator.table?.isActivePane = isActive
+        context.coordinator.table?.commands.events = events
     }
 
     private func addColumn(to table: NSTableView, id: NSUserInterfaceItemIdentifier,
@@ -99,9 +107,10 @@ struct FileTableView: NSViewRepresentable {
     // MARK: - 표와 모델(PaneModel) 사이를 이어 주는 연결자
 
     @MainActor
-    final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate {
+    final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate, FileListHost {
         var parent: FileTableView
         weak var table: FileTable?
+        let renamer = RenameEditor()
         private var items: [FileItem] = []
         private var isSyncing = false     // 모델 → 표로 반영하는 중에는 표 → 모델로 되돌려 보내지 않음
 
@@ -128,15 +137,40 @@ struct FileTableView: NSViewRepresentable {
             }
         }
 
-        func handle(_ key: ListKey) {
-            guard let table else { return }
-            switch key {
-            case .preview: table.preview.toggle()
-            case .open:    parent.model.activate(table.selectedRowIndexes.map { items[$0].url })
-            case .goUp:    parent.model.goUp()
-            case .tab(let backward): parent.events.tab(backward)
-            case .escape:  parent.events.escape()
+        // MARK: FileListHost (단축키·우클릭 메뉴가 쓰는 것)
+
+        var selectedURLs: [URL] {
+            guard let table else { return [] }
+            return table.selectedRowIndexes.compactMap { $0 < items.count ? items[$0].url : nil }
+        }
+
+        func syncFromModel() {
+            apply(model: parent.model)
+        }
+
+        func prepareContextMenu() -> Bool {
+            guard let table else { return false }
+            table.window?.makeFirstResponder(table)
+            let row = table.clickedRow
+            guard row >= 0, row < items.count else {
+                table.deselectAll(nil)                  // 빈 곳 우클릭: 선택 해제
+                return false
             }
+            if !table.selectedRowIndexes.contains(row) {
+                table.selectRowIndexes([row], byExtendingSelection: false)
+            }
+            return true
+        }
+
+        func beginRename(_ url: URL) {
+            guard let table,
+                  let row = items.firstIndex(where: { $0.url == url }) else { return }
+            let col = table.column(withIdentifier: .name)
+            guard col >= 0 else { return }
+            table.scrollRowToVisible(row)
+            guard let cell = table.view(atColumn: col, row: row, makeIfNecessary: true) as? NSTableCellView,
+                  let field = cell.textField else { return }
+            renamer.begin(field: field, url: url)
         }
 
         @objc func doubleClicked(_ sender: NSTableView) {
@@ -213,7 +247,7 @@ struct FileTableView: NSViewRepresentable {
             let last = table.selectedRow           // 가장 마지막에 선택한 줄
             let anchor = (last >= 0 && last < items.count) ? items[last].url : nil
             parent.model.setSelection(urls, anchor: anchor)
-            table.preview.refresh()
+            table.commands.preview.refresh()
         }
 
         // MARK: 이름 입력으로 바로 찾기
@@ -239,7 +273,7 @@ struct FileTableView: NSViewRepresentable {
             return items[row].url as NSURL
         }
 
-        // MARK: 놓기 (항상 이 칸의 현재 폴더로 복사)
+        // MARK: 놓기 (이 칸의 현재 폴더로 복사, ⌘ 누르고 끌어 왔으면 이동)
 
         func tableView(_ tableView: NSTableView, validateDrop info: any NSDraggingInfo,
                        proposedRow row: Int, proposedDropOperation dropOperation: NSTableView.DropOperation) -> NSDragOperation {
@@ -247,14 +281,18 @@ struct FileTableView: NSViewRepresentable {
             if let source = info.draggingSource as? NSTableView, source === tableView { return [] }
             guard draggedFileURLs(info).isEmpty == false else { return [] }
             tableView.setDropRow(-1, dropOperation: .on)    // 표 전체를 테두리로 표시
-            return .copy
+            return dropWantsMove(info) ? .move : .copy
         }
 
         func tableView(_ tableView: NSTableView, acceptDrop info: any NSDraggingInfo,
                        row: Int, dropOperation: NSTableView.DropOperation) -> Bool {
             let urls = draggedFileURLs(info)
             guard !urls.isEmpty else { return false }
-            parent.model.copyIn(urls)
+            if dropWantsMove(info) {
+                parent.model.moveIn(urls)
+            } else {
+                parent.model.copyIn(urls)
+            }
             return true
         }
     }
@@ -275,7 +313,7 @@ final class FileTable: NSTableView {
     var onMouseDown: (() -> Void)?
     var onBecameFirstResponder: (() -> Void)?
     var onKey: ((ListKey) -> Void)?
-    let preview = PreviewController()
+    let commands = FileCommands()
 
     // 활성 칸이 되면 키보드 입력을 받도록 스스로 포커스를 가져옴
     var isActivePane = false {
@@ -284,7 +322,7 @@ final class FileTable: NSTableView {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        preview.keyTarget = self
+        commands.preview.keyTarget = self
         if isActivePane { takeFocus() }
     }
 
@@ -314,10 +352,14 @@ final class FileTable: NSTableView {
         }
     }
 
+    // 메뉴 막대의 편집 > 복사·붙여넣기(⌘C/⌘V)가 이쪽으로 올 때
+    @objc func copy(_ sender: Any?) { onKey?(.copy) }
+    @objc func paste(_ sender: Any?) { onKey?(.paste(move: false)) }
+
     // 훑어보기 창이 이 표에게 "내용을 대 줄래?"라고 물을 때
     override func acceptsPreviewPanelControl(_ panel: QLPreviewPanel!) -> Bool { true }
-    override func beginPreviewPanelControl(_ panel: QLPreviewPanel!) { preview.begin(panel) }
-    override func endPreviewPanelControl(_ panel: QLPreviewPanel!) { preview.end(panel) }
+    override func beginPreviewPanelControl(_ panel: QLPreviewPanel!) { commands.preview.begin(panel) }
+    override func endPreviewPanelControl(_ panel: QLPreviewPanel!) { commands.preview.end(panel) }
 
     // Finder처럼: 아이콘이나 이름 글자 위에서 끌면 "파일 끌기",
     // 그 밖의 빈 부분에서 끌면 "범위 선택"

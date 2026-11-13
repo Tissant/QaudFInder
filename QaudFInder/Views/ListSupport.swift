@@ -20,24 +20,40 @@ struct ListEvents {
 }
 
 // MARK: - 단축키
+// 키 위치 번호(keyCode)로 판별합니다. 한글 입력 상태에서도 똑같이 동작하게 하려고.
 
 enum ListKey {
-    case preview          // 스페이스
-    case open             // Return, 숫자패드 Enter, ⌘↓
-    case goUp             // ⌘↑
-    case tab(backward: Bool)
+    case preview                 // 스페이스
+    case open                    // ⌘↓, ⌘O
+    case rename                  // Return, 숫자패드 Enter (Finder와 같음)
+    case goUp                    // ⌘↑
+    case trash                   // ⌘⌫ 휴지통으로 이동
+    case newFolder               // ⇧⌘N
+    case copy                    // ⌘C
+    case paste(move: Bool)       // ⌘V 복사해서 붙여넣기 / ⌥⌘V 옮기기
+    case copyPath                // ⌥⌘C 경로 복사
+    case tab(backward: Bool)     // Tab / ⇧Tab
     case escape
 
     init?(_ event: NSEvent) {
         let flags = event.modifierFlags.intersection([.command, .shift, .option, .control])
-        switch event.keyCode {
-        case 49 where flags.isEmpty:                 self = .preview
-        case 36, 76:                                 self = .open
-        case 125 where flags == .command:            self = .open
-        case 126 where flags == .command:            self = .goUp
-        case 48 where flags.isEmpty:                 self = .tab(backward: false)
-        case 48 where flags == .shift:               self = .tab(backward: true)
-        case 53:                                     self = .escape
+        let cmd: NSEvent.ModifierFlags = .command
+        let optCmd: NSEvent.ModifierFlags = [.command, .option]
+        let shiftCmd: NSEvent.ModifierFlags = [.command, .shift]
+        switch (event.keyCode, flags) {
+        case (49, []):            self = .preview
+        case (36, []), (76, []):  self = .rename
+        case (125, cmd), (31, cmd): self = .open        // ↓, O
+        case (126, cmd):          self = .goUp          // ↑
+        case (51, cmd):           self = .trash         // ⌫
+        case (45, shiftCmd):      self = .newFolder     // N
+        case (8, cmd):            self = .copy          // C
+        case (8, optCmd):         self = .copyPath
+        case (9, cmd):            self = .paste(move: false)   // V
+        case (9, optCmd):         self = .paste(move: true)
+        case (48, []):            self = .tab(backward: false)
+        case (48, [.shift]):      self = .tab(backward: true)
+        case (53, _):             self = .escape
         default: return nil
         }
     }
@@ -47,6 +63,14 @@ enum ListKey {
         [123, 124, 125, 126].contains(event.keyCode)
             && !event.modifierFlags.contains(.command)
     }
+}
+
+// MARK: - 끌어 놓기: 복사냐 이동이냐
+// 그냥 끌면 복사, ⌘를 누른 채 끌면 이동 (macOS는 ⌘를 누르면 "generic"으로 알려 줌)
+
+func dropWantsMove(_ info: any NSDraggingInfo) -> Bool {
+    let mask = info.draggingSourceOperationMask
+    return !mask.contains(.copy) && (mask.contains(.move) || mask.contains(.generic))
 }
 
 // MARK: - 끌어 온 파일 주소 읽기
@@ -118,5 +142,186 @@ extension PreviewController: @preconcurrency QLPreviewPanelDelegate {
         guard let event, event.type == .keyDown, ListKey.isArrow(event), let keyTarget else { return false }
         keyTarget.keyDown(with: event)
         return true
+    }
+}
+
+// MARK: - 표·아이콘 보기가 공통으로 제공해야 하는 것
+
+@MainActor
+protocol FileListHost: AnyObject {
+    var selectedURLs: [URL] { get }
+    func prepareContextMenu() -> Bool     // 우클릭한 항목을 선택. 항목 위에서 눌렀으면 true
+    func beginRename(_ url: URL)          // 이름 칸을 편집 상태로
+    func syncFromModel()                  // 모델의 목록을 화면에 즉시 반영
+}
+
+// MARK: - 단축키·우클릭 메뉴가 실제로 하는 일 (표·아이콘 보기 공통)
+
+@MainActor
+final class FileCommands: NSObject, NSMenuDelegate {
+    weak var model: PaneModel? {
+        didSet { preview.model = model }
+    }
+    weak var host: (any FileListHost)?
+    var events: ListEvents?
+    let preview = PreviewController()
+    let menu = NSMenu()
+
+    override init() {
+        super.init()
+        menu.delegate = self
+        menu.autoenablesItems = false
+    }
+
+    func handle(_ key: ListKey) {
+        guard let model, let host else { return }
+        switch key {
+        case .preview:           preview.toggle()
+        case .open:              model.activate(host.selectedURLs)
+        case .rename:            renameSelection()
+        case .goUp:              model.goUp()
+        case .trash:             model.moveToTrash(host.selectedURLs)
+        case .newFolder:         newFolder()
+        case .copy:              model.copyToPasteboard(host.selectedURLs)
+        case .paste(let move):   model.pasteFromPasteboard(move: move)
+        case .copyPath:          model.copyPaths(host.selectedURLs)
+        case .tab(let backward): events?.tab(backward)
+        case .escape:            events?.escape()
+        }
+    }
+
+    private func renameSelection() {
+        guard let urls = host?.selectedURLs, urls.count == 1 else { return }
+        host?.beginRename(urls[0])
+    }
+
+    private func newFolder() {
+        guard let host, let url = model?.makeNewFolder() else { return }
+        host.syncFromModel()
+        host.beginRename(url)
+    }
+
+    // MARK: 우클릭 메뉴
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        menu.removeAllItems()
+        guard let host else { return }
+        if host.prepareContextMenu() {
+            let single = host.selectedURLs.count == 1
+            add("열기", #selector(menuOpen), key: "o")
+            add("훑어보기", #selector(menuPreview), enabled: single, key: " ", flags: [])
+            menu.addItem(.separator())
+            add("이름 바꾸기", #selector(menuRename), enabled: single, key: "\r", flags: [])
+            add("복사", #selector(menuCopy), key: "c")
+            add("휴지통으로 이동", #selector(menuTrash), key: "\u{8}")
+            menu.addItem(.separator())
+            add("경로 복사", #selector(menuCopyPath), key: "c", flags: [.command, .option])
+            add("Finder에서 보기", #selector(menuReveal))
+        } else {
+            // 빈 곳을 우클릭
+            let canPaste = NSPasteboard.general.canReadObject(
+                forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true])
+            add("새 폴더", #selector(menuNewFolder), key: "n", flags: [.command, .shift])
+            add("붙여넣기", #selector(menuPaste), enabled: canPaste, key: "v")
+            menu.addItem(.separator())
+            add("경로 복사", #selector(menuCopyPath), key: "c", flags: [.command, .option])
+            add("Finder에서 보기", #selector(menuReveal))
+        }
+    }
+
+    private func add(_ title: String, _ action: Selector, enabled: Bool = true,
+                     key: String = "", flags: NSEvent.ModifierFlags = .command) {
+        let item = NSMenuItem(title: title, action: action, keyEquivalent: key)
+        item.keyEquivalentModifierMask = key.isEmpty ? [] : flags
+        item.target = self
+        item.isEnabled = enabled
+        menu.addItem(item)
+    }
+
+    @objc private func menuOpen()      { handle(.open) }
+    @objc private func menuPreview()   { handle(.preview) }
+    @objc private func menuRename()    { handle(.rename) }
+    @objc private func menuCopy()      { handle(.copy) }
+    @objc private func menuTrash()     { handle(.trash) }
+    @objc private func menuCopyPath()  { handle(.copyPath) }
+    @objc private func menuNewFolder() { handle(.newFolder) }
+    @objc private func menuPaste()     { handle(.paste(move: false)) }
+    @objc private func menuReveal()    { model?.revealInFinder(host?.selectedURLs ?? []) }
+}
+
+// MARK: - 이름 바꾸기 편집기
+// 목록의 이름 글자를 그 자리에서 편집 상태로 바꿉니다.
+// Return 또는 다른 곳 클릭: 확정 / esc: 취소
+
+@MainActor
+final class RenameEditor: NSObject, NSTextFieldDelegate {
+    private weak var field: NSTextField?
+    private var url: URL?
+    private var shownName = ""
+    private var savedColor: NSColor?
+    private var savedDrawsBackground = false
+    private var cancelled = false
+
+    var onCommit: ((URL, String) -> Void)?
+    var onFinish: (() -> Void)?             // 편집이 끝나면 (목록으로 포커스 되돌리기 등)
+
+    var isEditing: Bool { field != nil }
+
+    func begin(field: NSTextField, url: URL) {
+        finish()
+        self.field = field
+        self.url = url
+        shownName = field.stringValue
+        savedColor = field.textColor
+        savedDrawsBackground = field.drawsBackground
+        cancelled = false
+
+        // 화면에는 확장자가 숨겨져 있을 수 있으니, 편집할 때는 실제 파일 이름 전체를 보여 줌
+        field.stringValue = url.lastPathComponent
+        field.isEditable = true
+        field.isSelectable = true
+        field.drawsBackground = true
+        field.backgroundColor = .textBackgroundColor
+        field.textColor = .labelColor
+        field.delegate = self
+        field.window?.makeFirstResponder(field)
+
+        // Finder처럼 확장자 앞부분만 선택 (폴더는 전체)
+        if let editor = field.currentEditor() {
+            let full = url.lastPathComponent as NSString
+            let base = url.pathExtension.isEmpty || url.hasDirectoryPath
+                ? full : (full.deletingPathExtension as NSString)
+            editor.selectedRange = NSRange(location: 0, length: base.length)
+        }
+    }
+
+    func controlTextDidEndEditing(_ obj: Notification) {
+        guard let field, let url else { return }
+        let newName = field.stringValue
+        let wasCancelled = cancelled
+        finish()
+        if !wasCancelled { onCommit?(url, newName) }
+    }
+
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+        if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
+            cancelled = true
+            field?.abortEditing()
+            finish()
+            return true
+        }
+        return false
+    }
+
+    private func finish() {
+        guard let field else { return }
+        self.field = nil
+        field.delegate = nil
+        field.isEditable = false
+        field.isSelectable = false
+        field.drawsBackground = savedDrawsBackground
+        field.textColor = savedColor
+        field.stringValue = shownName
+        onFinish?()
     }
 }

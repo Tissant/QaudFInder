@@ -193,9 +193,9 @@ struct PaneView: View {
         }
     }
 
-    // 맨 아래: 2개의 항목, 43.66GB 사용 가능
+    // 맨 아래: 2개의 항목, 3.2GB (이 폴더가 차지하는 용량, 하위 폴더 포함)
     private var statusBar: some View {
-        Text("\(model.items.count)개의 항목" + (model.freeSpaceText.isEmpty ? "" : ", \(model.freeSpaceText)"))
+        Text("\(model.items.count)개의 항목" + (model.folderSizeText.isEmpty ? "" : ", \(model.folderSizeText)"))
             .font(.caption)
             .foregroundStyle(.secondary)
             .frame(maxWidth: .infinity)
