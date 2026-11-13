@@ -19,7 +19,7 @@ final class PaneModel: ObservableObject {
     @Published var errorMessage: String? = nil
     @Published var selection = Set<URL>()
     @Published var viewMode: ViewMode {
-        didSet { UserDefaults.standard.set(viewMode.rawValue, forKey: "pane\(index).viewMode") }
+        didSet { store?.set(viewMode.rawValue, forKey: "pane\(index).viewMode") }
     }
     @Published private(set) var sortKey: SortKey
     @Published private(set) var sortAscending: Bool
@@ -40,13 +40,18 @@ final class PaneModel: ObservableObject {
     var canGoBack: Bool { !backStack.isEmpty }
     var canGoForward: Bool { !forwardStack.isEmpty }
 
-    init(index: Int, defaultURL: URL) {
+    // 상태(폴더·보기 방식·정렬·숨김 파일)를 저장·복원하는 곳.
+    // 첫 번째 창의 칸만 저장합니다. ⌘N으로 연 창은 nil → 기본 폴더로 시작하고 저장하지 않음.
+    let store: UserDefaults?
+
+    init(index: Int, defaultURL: URL, remembers: Bool = true) {
         self.index = index
-        let defaults = UserDefaults.standard
+        self.store = remembers ? UserDefaults.standard : nil
+        let defaults = store
 
         // 지난번에 열어 둔 폴더가 있으면 그 폴더로 시작
         var start = defaultURL
-        if let saved = defaults.string(forKey: "pane\(index).path") {
+        if let saved = defaults?.string(forKey: "pane\(index).path") {
             var isDir: ObjCBool = false
             if FileManager.default.fileExists(atPath: saved, isDirectory: &isDir), isDir.boolValue {
                 start = URL(fileURLWithPath: saved)
@@ -55,14 +60,14 @@ final class PaneModel: ObservableObject {
         _currentURL = Published(initialValue: start)
 
         // 지난번 보기 방식·정렬 기억
-        let savedMode = defaults.string(forKey: "pane\(index).viewMode")
+        let savedMode = defaults?.string(forKey: "pane\(index).viewMode")
             .flatMap { ViewMode(rawValue: $0) } ?? .list
         _viewMode = Published(initialValue: savedMode)
-        let savedSort = defaults.string(forKey: "pane\(index).sortKey")
+        let savedSort = defaults?.string(forKey: "pane\(index).sortKey")
             .flatMap { SortKey(rawValue: $0) } ?? .name
         _sortKey = Published(initialValue: savedSort)
-        _sortAscending = Published(initialValue: defaults.object(forKey: "pane\(index).sortAscending") as? Bool ?? true)
-        _showHidden = Published(initialValue: defaults.bool(forKey: "pane\(index).showHidden"))
+        _sortAscending = Published(initialValue: defaults?.object(forKey: "pane\(index).sortAscending") as? Bool ?? true)
+        _showHidden = Published(initialValue: defaults?.bool(forKey: "pane\(index).showHidden") ?? false)
 
         PaneModel.allPanes.add(self)
         reload()
@@ -104,7 +109,7 @@ final class PaneModel: ObservableObject {
         currentURL = url.standardizedFileURL
         selection.removeAll()
         anchor = nil
-        UserDefaults.standard.set(currentURL.path, forKey: "pane\(index).path")
+        store?.set(currentURL.path, forKey: "pane\(index).path")
         reload()
         startWatching()
     }
@@ -132,6 +137,14 @@ final class PaneModel: ObservableObject {
         watcher = source
     }
 
+    // 창을 닫을 때: 폴더 감시와 용량 계산을 멈춤
+    func stopWatching() {
+        watcher?.cancel()
+        watcher = nil
+        sizeTask?.cancel()
+        autoReloadTask?.cancel()
+    }
+
     private func scheduleAutoReload() {
         autoReloadTask?.cancel()
         autoReloadTask = Task { [weak self] in
@@ -147,7 +160,7 @@ final class PaneModel: ObservableObject {
 
     func toggleHidden() {
         showHidden.toggle()
-        UserDefaults.standard.set(showHidden, forKey: "pane\(index).showHidden")
+        store?.set(showHidden, forKey: "pane\(index).showHidden")
         reload()
     }
 
@@ -183,8 +196,8 @@ final class PaneModel: ObservableObject {
         guard key != sortKey || ascending != sortAscending else { return }
         sortKey = key
         sortAscending = ascending
-        UserDefaults.standard.set(key.rawValue, forKey: "pane\(index).sortKey")
-        UserDefaults.standard.set(ascending, forKey: "pane\(index).sortAscending")
+        store?.set(key.rawValue, forKey: "pane\(index).sortKey")
+        store?.set(ascending, forKey: "pane\(index).sortAscending")
         items = sorted(items)
     }
 

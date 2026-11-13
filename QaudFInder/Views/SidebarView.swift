@@ -14,7 +14,7 @@ import AppKit
 
 struct SidebarView: View {
     @ObservedObject var sidebar = SidebarModel.shared
-    var activeURL: URL                    // 활성 칸이 보고 있는 폴더 (일치하는 항목을 강조)
+    @ObservedObject var activePane: PaneModel   // 활성 칸 (그 칸의 폴더와 같은 항목을 강조)
     var onOpen: (URL) -> Void
 
     var body: some View {
@@ -25,7 +25,7 @@ struct SidebarView: View {
                 .padding(.horizontal, 12)
                 .padding(.top, 8)
                 .padding(.bottom, 2)
-            SidebarTable(favorites: sidebar.favorites, activeURL: activeURL, onOpen: onOpen)
+            SidebarTable(favorites: sidebar.favorites, activeURL: activePane.currentURL, onOpen: onOpen)
         }
     }
 }

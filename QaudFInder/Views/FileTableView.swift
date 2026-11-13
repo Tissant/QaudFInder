@@ -46,8 +46,10 @@ struct FileTableView: NSViewRepresentable {
         addColumn(to: table, id: .kind, title: "종류", width: 110, minWidth: 40)
 
         // 열 너비·순서를 칸마다 기억
-        table.autosaveName = "pane\(model.index).table"
-        table.autosaveTableColumns = true
+        if model.store != nil {                         // 첫 번째 창만
+            table.autosaveName = "pane\(model.index).table"
+            table.autosaveTableColumns = true
+        }
 
         // 지난번 정렬 상태 표시 (delegate 연결 전에 넣어서 정렬 이벤트가 생기지 않게)
         table.sortDescriptors = [NSSortDescriptor(key: model.sortKey.rawValue, ascending: model.sortAscending)]

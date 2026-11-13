@@ -6,6 +6,7 @@
 
 import SwiftUI
 import AppKit
+import Combine
 
 // MARK: - 병합할 수 있는 칸 짝
 // 칸 번호:  0 | 1
@@ -33,11 +34,35 @@ private func homeFolder(_ sub: String) -> URL {
     return sub.isEmpty ? home : home.appendingPathComponent(sub)
 }
 
+// MARK: - 창 하나의 칸 4개
+// 첫 번째 창: 지난번 상태(폴더·보기 방식·정렬 등)를 복원하고 저장함.
+// ⌘N으로 더 연 창: 기본 폴더(데스크탑·문서·다운로드·홈)로 시작하고 저장하지 않음.
+// 첫 번째 창을 닫으면, 그다음에 여는 창이 "첫 번째 창" 역할을 이어받음.
+
+@MainActor
+final class WindowPanes: ObservableObject {
+    private static var rememberingWindowOpen = false
+    let remembers: Bool
+    let panes: [PaneModel]
+
+    init() {
+        let first = !Self.rememberingWindowOpen
+        if first { Self.rememberingWindowOpen = true }
+        remembers = first
+        let folders = [homeFolder("Desktop"), homeFolder("Documents"), homeFolder("Downloads"), homeFolder("")]
+        panes = folders.enumerated().map { i, url in
+            PaneModel(index: i, defaultURL: url, remembers: first)
+        }
+    }
+
+    func windowClosed() {
+        panes.forEach { $0.stopWatching() }
+        if remembers { Self.rememberingWindowOpen = false }
+    }
+}
+
 struct ContentView: View {
-    @StateObject private var pane0 = PaneModel(index: 0, defaultURL: homeFolder("Desktop"))
-    @StateObject private var pane1 = PaneModel(index: 1, defaultURL: homeFolder("Documents"))
-    @StateObject private var pane2 = PaneModel(index: 2, defaultURL: homeFolder("Downloads"))
-    @StateObject private var pane3 = PaneModel(index: 3, defaultURL: homeFolder(""))
+    @StateObject private var window = WindowPanes()
 
     @State private var merges: Set<PanePair> = []        // 현재 병합된 짝들
     @State private var mergeSelection: [Int] = []         // ⌘ 클릭으로 고른 칸 (최대 2개)
@@ -51,7 +76,7 @@ struct ContentView: View {
 
     var body: some View {
         NavigationSplitView(columnVisibility: $sidebarVisibility) {
-            SidebarView(activeURL: model(activePane).currentURL) { url in
+            SidebarView(activePane: model(activePane)) { url in
                 let pane = model(activePane)
                 pane.open(url)
                 pane.requestFocus()               // 사이드바를 누른 뒤에도 바로 키보드로 칸을 다루도록
@@ -70,8 +95,11 @@ struct ContentView: View {
                 }
         }
         .onChange(of: sidebarVisibility) { _, visibility in
-            UserDefaults.standard.set(visibility == .detailOnly, forKey: "sidebar.collapsed")
+            if window.remembers {
+                UserDefaults.standard.set(visibility == .detailOnly, forKey: "sidebar.collapsed")
+            }
         }
+        .onDisappear { window.windowClosed() }     // 창을 닫을 때
         .sheet(isPresented: $showGoTo, onDismiss: { model(activePane).requestFocus() }) {
             GoToFolderView(startPath: model(activePane).currentURL.path) { text in
                 goTo(text)
@@ -197,12 +225,7 @@ struct ContentView: View {
     }
 
     private func model(_ i: Int) -> PaneModel {
-        switch i {
-        case 0: return pane0
-        case 1: return pane1
-        case 2: return pane2
-        default: return pane3
-        }
+        window.panes[min(max(i, 0), 3)]
     }
 
     private func paneView(_ i: Int) -> some View {
