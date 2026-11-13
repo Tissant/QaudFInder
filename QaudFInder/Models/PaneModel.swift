@@ -23,6 +23,7 @@ final class PaneModel: ObservableObject {
     }
     @Published private(set) var sortKey: SortKey
     @Published private(set) var sortAscending: Bool
+    @Published private(set) var focusRequest = 0     // 숫자가 바뀌면 목록이 키보드 포커스를 가져감
 
     private var backStack: [URL] = []
     private var forwardStack: [URL] = []
@@ -61,6 +62,11 @@ final class PaneModel: ObservableObject {
 
         PaneModel.allPanes.add(self)
         reload()
+    }
+
+    // 사이드바 클릭, ⇧⌘G 창 닫기 뒤에 키보드 입력을 이 칸 목록으로 되돌릴 때
+    func requestFocus() {
+        focusRequest += 1
     }
 
     // MARK: 이동

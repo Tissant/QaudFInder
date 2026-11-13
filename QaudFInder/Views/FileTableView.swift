@@ -28,6 +28,7 @@ struct FileTableView: NSViewRepresentable {
         let table = FileTable()
         let c = context.coordinator
         c.table = table
+        c.lastFocusRequest = model.focusRequest
 
         table.style = .fullWidth
         table.rowSizeStyle = .default
@@ -57,10 +58,10 @@ struct FileTableView: NSViewRepresentable {
         table.doubleAction = #selector(Coordinator.doubleClicked(_:))
 
         // 끌기: 앱 안(다른 칸)으로는 복사·이동 가능, Finder 등 바깥으로는 항상 "복사"만
-        table.setDraggingSourceOperationMask([.copy, .move, .generic], forLocal: true)
+        table.setDraggingSourceOperationMask([.copy, .move, .generic, .link], forLocal: true)
         table.setDraggingSourceOperationMask(.copy, forLocal: false)
         // 놓기: 다른 곳에서 끌어 온 파일을 받음
-        table.registerForDraggedTypes([.fileURL])
+        table.registerForDraggedTypes([.fileURL, .quadFolder])
         table.draggingDestinationFeedbackStyle = .regular
 
         let commands = table.commands
@@ -91,6 +92,11 @@ struct FileTableView: NSViewRepresentable {
         context.coordinator.apply(model: model)
         context.coordinator.table?.isActivePane = isActive
         context.coordinator.table?.commands.events = events
+        // 사이드바 클릭 등으로 포커스를 돌려 달라는 요청
+        if model.focusRequest != context.coordinator.lastFocusRequest {
+            context.coordinator.lastFocusRequest = model.focusRequest
+            context.coordinator.table?.takeFocus()
+        }
     }
 
     private func addColumn(to table: NSTableView, id: NSUserInterfaceItemIdentifier,
@@ -111,6 +117,7 @@ struct FileTableView: NSViewRepresentable {
         var parent: FileTableView
         weak var table: FileTable?
         let renamer = RenameEditor()
+        var lastFocusRequest = 0
         private var items: [FileItem] = []
         private var isSyncing = false     // 모델 → 표로 반영하는 중에는 표 → 모델로 되돌려 보내지 않음
 
@@ -273,26 +280,21 @@ struct FileTableView: NSViewRepresentable {
             return items[row].url as NSURL
         }
 
-        // MARK: 놓기 (이 칸의 현재 폴더로 복사, ⌘ 누르고 끌어 왔으면 이동)
+        // MARK: 놓기 (규칙은 ListSupport.swift의 PaneDrop)
 
         func tableView(_ tableView: NSTableView, validateDrop info: any NSDraggingInfo,
                        proposedRow row: Int, proposedDropOperation dropOperation: NSTableView.DropOperation) -> NSDragOperation {
             // 같은 표 안에서 끌어 놓는 것은 아무 일도 하지 않음
             if let source = info.draggingSource as? NSTableView, source === tableView { return [] }
-            guard draggedFileURLs(info).isEmpty == false else { return [] }
+            guard let drop = PaneDrop(info) else { return [] }
             tableView.setDropRow(-1, dropOperation: .on)    // 표 전체를 테두리로 표시
-            return dropWantsMove(info) ? .move : .copy
+            return drop.operation(for: info)
         }
 
         func tableView(_ tableView: NSTableView, acceptDrop info: any NSDraggingInfo,
                        row: Int, dropOperation: NSTableView.DropOperation) -> Bool {
-            let urls = draggedFileURLs(info)
-            guard !urls.isEmpty else { return false }
-            if dropWantsMove(info) {
-                parent.model.moveIn(urls)
-            } else {
-                parent.model.copyIn(urls)
-            }
+            guard let drop = PaneDrop(info) else { return false }
+            drop.perform(on: parent.model)
             return true
         }
     }
@@ -326,7 +328,7 @@ final class FileTable: NSTableView {
         if isActivePane { takeFocus() }
     }
 
-    private func takeFocus() {
+    func takeFocus() {
         DispatchQueue.main.async { [weak self] in
             guard let self, let window = self.window, window.firstResponder !== self else { return }
             window.makeFirstResponder(self)

@@ -27,6 +27,7 @@ struct FileGridView: NSViewRepresentable {
         let c = context.coordinator
         let grid = FileCollection()
         c.grid = grid
+        c.lastFocusRequest = model.focusRequest
 
         let layout = NSCollectionViewFlowLayout()
         layout.itemSize = NSSize(width: 88, height: 96)
@@ -45,9 +46,9 @@ struct FileGridView: NSViewRepresentable {
         grid.delegate = c
 
         // 끌기: 앱 안(다른 칸)으로는 복사·이동 가능, 바깥으로는 항상 "복사"만 / 놓기: 다른 곳의 파일을 받음
-        grid.setDraggingSourceOperationMask([.copy, .move, .generic], forLocal: true)
+        grid.setDraggingSourceOperationMask([.copy, .move, .generic, .link], forLocal: true)
         grid.setDraggingSourceOperationMask(.copy, forLocal: false)
-        grid.registerForDraggedTypes([.fileURL])
+        grid.registerForDraggedTypes([.fileURL, .quadFolder])
 
         let commands = grid.commands
         commands.model = model
@@ -77,6 +78,11 @@ struct FileGridView: NSViewRepresentable {
         context.coordinator.apply(model: model)
         context.coordinator.grid?.isActivePane = isActive
         context.coordinator.grid?.commands.events = events
+        // 사이드바 클릭 등으로 포커스를 돌려 달라는 요청
+        if model.focusRequest != context.coordinator.lastFocusRequest {
+            context.coordinator.lastFocusRequest = model.focusRequest
+            context.coordinator.grid?.takeFocus()
+        }
     }
 
     // MARK: - 컬렉션 뷰와 모델(PaneModel) 사이를 이어 주는 연결자
@@ -86,6 +92,7 @@ struct FileGridView: NSViewRepresentable {
         var parent: FileGridView
         weak var grid: FileCollection?
         let renamer = RenameEditor()
+        var lastFocusRequest = 0
         private var items: [FileItem] = []
 
         init(_ parent: FileGridView) {
@@ -208,7 +215,7 @@ struct FileGridView: NSViewRepresentable {
             return items[indexPath.item].url as NSURL
         }
 
-        // MARK: 놓기 (이 칸의 현재 폴더로 복사, ⌘ 누르고 끌어 왔으면 이동)
+        // MARK: 놓기 (규칙은 ListSupport.swift의 PaneDrop)
 
         func collectionView(_ collectionView: NSCollectionView, validateDrop draggingInfo: any NSDraggingInfo,
                             proposedIndexPath proposedDropIndexPath: AutoreleasingUnsafeMutablePointer<NSIndexPath>,
@@ -218,24 +225,19 @@ struct FileGridView: NSViewRepresentable {
                 grid?.isDropHighlighted = false
                 return []
             }
-            guard !draggedFileURLs(draggingInfo).isEmpty else { return [] }
+            guard let drop = PaneDrop(draggingInfo) else { return [] }
             // 특정 아이콘 "위"가 아니라 목록 끝에 놓는 것으로 처리 (폴더 안으로 들어가지 않음)
             proposedDropIndexPath.pointee = NSIndexPath(forItem: items.count, inSection: 0)
             proposedDropOperation.pointee = .before
             grid?.isDropHighlighted = true
-            return dropWantsMove(draggingInfo) ? .move : .copy
+            return drop.operation(for: draggingInfo)
         }
 
         func collectionView(_ collectionView: NSCollectionView, acceptDrop draggingInfo: any NSDraggingInfo,
                             indexPath: IndexPath, dropOperation: NSCollectionView.DropOperation) -> Bool {
             grid?.isDropHighlighted = false
-            let urls = draggedFileURLs(draggingInfo)
-            guard !urls.isEmpty else { return false }
-            if dropWantsMove(draggingInfo) {
-                parent.model.moveIn(urls)
-            } else {
-                parent.model.copyIn(urls)
-            }
+            guard let drop = PaneDrop(draggingInfo) else { return false }
+            drop.perform(on: parent.model)
             return true
         }
     }
@@ -351,7 +353,7 @@ final class FileCollection: NSCollectionView {
         if isActivePane { takeFocus() }
     }
 
-    private func takeFocus() {
+    func takeFocus() {
         DispatchQueue.main.async { [weak self] in
             guard let self, let window = self.window, window.firstResponder !== self else { return }
             window.makeFirstResponder(self)

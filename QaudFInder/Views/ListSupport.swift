@@ -65,9 +65,68 @@ enum ListKey {
     }
 }
 
-// MARK: - 끌어 놓기: 복사냐 이동이냐
-// 그냥 끌면 복사, ⌘를 누른 채 끌면 이동 (macOS는 ⌘를 누르면 "generic"으로 알려 줌)
+// MARK: - 끌어 놓기 규칙 (칸에 무언가를 놓았을 때)
+//
+//  끄는 것              놓는 곳   동작
+//  사이드바 항목        칸        그 칸이 해당 폴더로 이동
+//  칸의 파일·폴더       다른 칸   복사 (끌기 시작 후 ⌘ 누르면 이동)
+//  칸의 폴더 + ⌥        다른 칸   그 칸이 해당 폴더로 이동
+//  Finder의 파일        칸        복사
 
+extension NSPasteboard.PasteboardType {
+    // 사이드바에서 끈 폴더 (파일 주소가 아니라 "이 폴더로 가라"는 뜻이라 따로 구분)
+    static let quadFolder = NSPasteboard.PasteboardType("net.tissant.quadfinder.folder")
+    // 사이드바 안에서 순서를 바꿀 때 (몇 번째 줄인지)
+    static let quadSidebarRow = NSPasteboard.PasteboardType("net.tissant.quadfinder.sidebar-row")
+}
+
+enum PaneDrop {
+    case navigate(URL)      // 칸이 그 폴더로 이동
+    case copy([URL])
+    case move([URL])
+
+    init?(_ info: any NSDraggingInfo) {
+        if let path = info.draggingPasteboard.string(forType: .quadFolder) {
+            self = .navigate(URL(fileURLWithPath: path))
+            return
+        }
+        let urls = draggedFileURLs(info)
+        guard !urls.isEmpty else { return nil }
+        if NSEvent.modifierFlags.contains(.option), urls.count == 1, SidebarModel.isFolder(urls[0]) {
+            self = .navigate(urls[0])
+        } else if dropWantsMove(info) {
+            self = .move(urls)
+        } else {
+            self = .copy(urls)
+        }
+    }
+
+    // 마우스 커서 모양 (복사: +, 이동: 없음, 폴더로 이동: 화살표)
+    func operation(for info: any NSDraggingInfo) -> NSDragOperation {
+        switch self {
+        case .copy: return .copy
+        case .move: return .move
+        case .navigate:
+            return info.draggingSourceOperationMask.contains(.link) ? .link : .copy
+        }
+    }
+
+    @MainActor
+    func perform(on model: PaneModel) {
+        switch self {
+        case .navigate(let url): model.open(url)
+        case .copy(let urls):    model.copyIn(urls)
+        case .move(let urls):    model.moveIn(urls)
+        }
+    }
+
+    var isNavigate: Bool {
+        if case .navigate = self { return true }
+        return false
+    }
+}
+
+// 그냥 끌면 복사, ⌘를 누른 채 끌면 이동 (macOS는 ⌘를 누르면 "generic"으로 알려 줌)
 func dropWantsMove(_ info: any NSDraggingInfo) -> Bool {
     let mask = info.draggingSourceOperationMask
     return !mask.contains(.copy) && (mask.contains(.move) || mask.contains(.generic))
@@ -217,6 +276,10 @@ final class FileCommands: NSObject, NSMenuDelegate {
             menu.addItem(.separator())
             add("경로 복사", #selector(menuCopyPath), key: "c", flags: [.command, .option])
             add("Finder에서 보기", #selector(menuReveal))
+            let folders = host.selectedURLs.filter { SidebarModel.isFolder($0) }
+            if !folders.isEmpty && folders.count == host.selectedURLs.count {
+                add("사이드바에 추가", #selector(menuAddToSidebar))
+            }
         } else {
             // 빈 곳을 우클릭
             let canPaste = NSPasteboard.general.canReadObject(
@@ -226,6 +289,7 @@ final class FileCommands: NSObject, NSMenuDelegate {
             menu.addItem(.separator())
             add("경로 복사", #selector(menuCopyPath), key: "c", flags: [.command, .option])
             add("Finder에서 보기", #selector(menuReveal))
+            add("이 폴더를 사이드바에 추가", #selector(menuAddToSidebar))
         }
     }
 
@@ -247,6 +311,11 @@ final class FileCommands: NSObject, NSMenuDelegate {
     @objc private func menuNewFolder() { handle(.newFolder) }
     @objc private func menuPaste()     { handle(.paste(move: false)) }
     @objc private func menuReveal()    { model?.revealInFinder(host?.selectedURLs ?? []) }
+    @objc private func menuAddToSidebar() {
+        guard let model else { return }
+        let urls = host?.selectedURLs ?? []
+        SidebarModel.shared.add(urls.isEmpty ? [model.currentURL] : urls)
+    }
 }
 
 // MARK: - 이름 바꾸기 편집기

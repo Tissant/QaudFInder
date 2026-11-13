@@ -1,7 +1,7 @@
 //
 //  ContentView.swift
 //  QuadFinder — 한 창에 폴더 4개를 띄우는 가벼운 파일 탐색기
-//  전체 창: 2×2 칸 배치와 칸 병합 / 병합 해제
+//  전체 창: 왼쪽 사이드바(접기/펼치기) + 2×2 칸 배치와 칸 병합 / 병합 해제
 //
 
 import SwiftUI
@@ -44,8 +44,68 @@ struct ContentView: View {
     @State private var paneFrames: [Int: CGRect] = [:]    // 각 칸의 화면 위치 ("병합하기" 버튼 위치 계산용)
     @State private var hint: String? = nil                // 아래쪽 안내 문구
     @State private var activePane = 0                     // 키보드로 다루는 칸 (Tab으로 이동)
+    @State private var showGoTo = false                   // ⇧⌘G 폴더로 이동 창
+    // 사이드바 접힘 상태 (앱을 다시 켜도 기억)
+    @State private var sidebarVisibility: NavigationSplitViewVisibility =
+        UserDefaults.standard.bool(forKey: "sidebar.collapsed") ? .detailOnly : .all
 
     var body: some View {
+        NavigationSplitView(columnVisibility: $sidebarVisibility) {
+            SidebarView(activeURL: model(activePane).currentURL) { url in
+                let pane = model(activePane)
+                pane.open(url)
+                pane.requestFocus()               // 사이드바를 누른 뒤에도 바로 키보드로 칸을 다루도록
+            }
+            .navigationSplitViewColumnWidth(min: 140, ideal: 180, max: 280)
+        } detail: {
+            paneArea
+                .toolbar {
+                    ToolbarItem {
+                        Button { showGoTo = true } label: {
+                            Image(systemName: "arrow.forward.folder")
+                        }
+                        .help("폴더로 이동 (⇧⌘G)")
+                        .keyboardShortcut("g", modifiers: [.command, .shift])
+                    }
+                }
+        }
+        .onChange(of: sidebarVisibility) { _, visibility in
+            UserDefaults.standard.set(visibility == .detailOnly, forKey: "sidebar.collapsed")
+        }
+        .sheet(isPresented: $showGoTo, onDismiss: { model(activePane).requestFocus() }) {
+            GoToFolderView(startPath: model(activePane).currentURL.path) { text in
+                goTo(text)
+            }
+        }
+    }
+
+    // MARK: ⇧⌘G 경로로 이동. 실패하면 안내 문구를 돌려줌
+
+    private func goTo(_ text: String) -> String? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "경로를 입력하세요." }
+        let pane = model(activePane)
+        var path = (trimmed as NSString).expandingTildeInPath
+        if !path.hasPrefix("/") {
+            path = pane.currentURL.appendingPathComponent(path).path   // 지금 폴더 기준
+        }
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            return "그런 폴더나 파일이 없습니다: \(url.path)"
+        }
+        if SidebarModel.isFolder(url) {
+            pane.open(url)
+        } else {
+            // 파일이면 그 파일이 있는 폴더로 가서 선택
+            pane.open(url.deletingLastPathComponent())
+            pane.setSelection([url], anchor: url)
+        }
+        return nil
+    }
+
+    // MARK: 칸 4개 + 병합 버튼 + 안내 문구
+
+    private var paneArea: some View {
         ZStack {
             grid
 

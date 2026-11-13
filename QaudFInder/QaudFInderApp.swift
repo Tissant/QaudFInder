@@ -13,5 +13,8 @@ struct QaudFInderApp: App {
         WindowGroup {
             ContentView()
         }
+        .commands {
+            SidebarCommands()      // 보기 메뉴의 "사이드바 가리기/보기" (⌃⌘S)
+        }
     }
 }
