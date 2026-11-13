@@ -127,6 +127,12 @@ struct ContentView: View {
                 .position(x: rect.midX, y: rect.midY)
             }
 
+            // 복사·이동 진행률 (오른쪽 아래)
+            CopyProgressBar()
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                .padding(.trailing, 16)
+                .padding(.bottom, 36)
+
             if let hint {
                 Text(hint)
                     .font(.callout)

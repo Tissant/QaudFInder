@@ -298,6 +298,7 @@ final class IconItem: NSCollectionViewItem {
     func configure(_ item: FileItem) {
         icon.image = NSWorkspace.shared.icon(forFile: item.url.path)
         label.stringValue = item.name
+        view.alphaValue = item.isHidden ? 0.5 : 1          // 숨김 파일은 흐리게
         updateLook()
     }
 

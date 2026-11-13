@@ -195,7 +195,9 @@ struct PaneView: View {
 
     // 맨 아래: 2개의 항목, 3.2GB (이 폴더가 차지하는 용량, 하위 폴더 포함)
     private var statusBar: some View {
-        Text("\(model.items.count)개의 항목" + (model.folderSizeText.isEmpty ? "" : ", \(model.folderSizeText)"))
+        Text("\(model.items.count)개의 항목"
+             + (model.folderSizeText.isEmpty ? "" : ", \(model.folderSizeText)")
+             + (model.showHidden ? " · 숨김 파일 표시 중" : ""))
             .font(.caption)
             .foregroundStyle(.secondary)
             .frame(maxWidth: .infinity)

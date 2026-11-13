@@ -24,12 +24,15 @@ final class PaneModel: ObservableObject {
     @Published private(set) var sortKey: SortKey
     @Published private(set) var sortAscending: Bool
     @Published private(set) var focusRequest = 0     // 숫자가 바뀌면 목록이 키보드 포커스를 가져감
+    @Published private(set) var showHidden: Bool     // 숨김 파일 보기 (⇧⌘., 칸별 저장)
 
     private var backStack: [URL] = []
     private var forwardStack: [URL] = []
     private var anchor: URL? = nil          // 마지막으로 선택한 파일 (Shift 범위 선택, 훑어보기 대상)
 
     private var sizeTask: Task<Void, Never>? = nil   // 폴더 용량 계산 (백그라운드)
+    private var watcher: DispatchSourceFileSystemObject? = nil   // 폴더 변경 감시 (자동 새로고침)
+    private var autoReloadTask: Task<Void, Never>? = nil
 
     // 열려 있는 모든 칸 (파일을 바꾼 뒤 같은 폴더를 보는 다른 칸도 새로고침하려고)
     private static let allPanes = NSHashTable<PaneModel>.weakObjects()
@@ -59,9 +62,11 @@ final class PaneModel: ObservableObject {
             .flatMap { SortKey(rawValue: $0) } ?? .name
         _sortKey = Published(initialValue: savedSort)
         _sortAscending = Published(initialValue: defaults.object(forKey: "pane\(index).sortAscending") as? Bool ?? true)
+        _showHidden = Published(initialValue: defaults.bool(forKey: "pane\(index).showHidden"))
 
         PaneModel.allPanes.add(self)
         reload()
+        startWatching()
     }
 
     // 사이드바 클릭, ⇧⌘G 창 닫기 뒤에 키보드 입력을 이 칸 목록으로 되돌릴 때
@@ -100,6 +105,49 @@ final class PaneModel: ObservableObject {
         selection.removeAll()
         anchor = nil
         UserDefaults.standard.set(currentURL.path, forKey: "pane\(index).path")
+        reload()
+        startWatching()
+    }
+
+    // MARK: 자동 새로고침
+    // 지금 폴더에 파일이 생기거나·지워지거나·이름이 바뀌면 macOS가 알려 줍니다.
+    // 짧은 시간에 여러 번 바뀌면 0.4초 기다렸다가 한 번만 새로고침합니다.
+    // (폴더 안 파일의 "내용"만 바뀐 경우는 알려 주지 않을 수 있어 ⟳ 버튼은 남겨 둡니다)
+
+    private func startWatching() {
+        watcher?.cancel()
+        watcher = nil
+        let fd = Darwin.open(currentURL.path, O_EVTONLY)        // O_EVTONLY: 감시만 하므로 디스크 꺼내기를 막지 않음
+        guard fd >= 0 else { return }
+        let source = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: fd,
+            eventMask: [.write, .delete, .rename, .link, .attrib, .extend],
+            queue: .main
+        )
+        source.setEventHandler { [weak self] in
+            MainActor.assumeIsolated { self?.scheduleAutoReload() }
+        }
+        source.setCancelHandler { Darwin.close(fd) }
+        source.resume()
+        watcher = source
+    }
+
+    private func scheduleAutoReload() {
+        autoReloadTask?.cancel()
+        autoReloadTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(400))
+            guard !Task.isCancelled, let self else { return }
+            self.reload(keepError: true)
+            // 폴더 자체가 지워지거나 이름이 바뀌었을 수도 있으니 감시를 다시 걸기
+            self.startWatching()
+        }
+    }
+
+    // MARK: 숨김 파일 (⇧⌘.)
+
+    func toggleHidden() {
+        showHidden.toggle()
+        UserDefaults.standard.set(showHidden, forKey: "pane\(index).showHidden")
         reload()
     }
 
@@ -166,18 +214,19 @@ final class PaneModel: ObservableObject {
 
     // MARK: 목록 읽기
 
-    func reload() {
+    // keepError: 자동 새로고침일 때는 화면의 안내 문구(복사 실패 등)를 지우지 않음
+    func reload(keepError: Bool = false) {
         let keys: [URLResourceKey] = [
-            .isDirectoryKey, .isPackageKey, .fileSizeKey,
+            .isDirectoryKey, .isPackageKey, .fileSizeKey, .isHiddenKey,
             .contentModificationDateKey, .localizedNameKey, .localizedTypeDescriptionKey
         ]
         do {
             let urls = try FileManager.default.contentsOfDirectory(
                 at: currentURL,
                 includingPropertiesForKeys: keys,
-                options: [.skipsHiddenFiles]          // 숨김 파일은 표시하지 않음
+                options: showHidden ? [] : [.skipsHiddenFiles]   // 숨김 파일은 ⇧⌘. 로 켰을 때만
             )
-            items = sorted(urls.map { u in
+            let newItems = sorted(urls.map { u in
                 let v = try? u.resourceValues(forKeys: Set(keys))
                 let isDir = (v?.isDirectory ?? false) && !(v?.isPackage ?? false)
                 return FileItem(
@@ -186,18 +235,21 @@ final class PaneModel: ObservableObject {
                     isDirectory: isDir,
                     size: isDir ? nil : v?.fileSize.map { Int64($0) },
                     modified: v?.contentModificationDate,
-                    kind: v?.localizedTypeDescription ?? ""
+                    kind: v?.localizedTypeDescription ?? "",
+                    isHidden: (v?.isHidden ?? false) || u.lastPathComponent.hasPrefix(".")
                 )
             })
-            errorMessage = nil
+            if newItems != items { items = newItems }       // 바뀐 게 있을 때만 화면 갱신
+            if !keepError { errorMessage = nil }
         } catch {
-            items = []
+            if !items.isEmpty { items = [] }
             errorMessage = "이 폴더를 열 수 없습니다: \(error.localizedDescription)"
         }
 
         // 지워진 파일은 선택에서 빼기
         let existing = Set(items.map { $0.url })
-        selection = selection.filter { existing.contains($0) }
+        let kept = selection.filter { existing.contains($0) }
+        if kept != selection { selection = kept }
 
         computeFolderSize()
     }
@@ -311,8 +363,8 @@ final class PaneModel: ObservableObject {
             errorMessage = "이름에 / 나 : 는 쓸 수 없습니다."
             return nil
         }
-        if name.hasPrefix(".") {
-            errorMessage = "점(.)으로 시작하는 이름은 숨김 파일이 되어 보이지 않게 됩니다."
+        if name.hasPrefix(".") && !showHidden {
+            errorMessage = "점(.)으로 시작하는 이름은 숨김 파일이 되어 보이지 않게 됩니다. (⇧⌘. 로 숨김 파일을 켜면 가능)"
             return nil
         }
         let dest = url.deletingLastPathComponent().appendingPathComponent(name)
@@ -337,7 +389,7 @@ final class PaneModel: ObservableObject {
     // MARK: 새 폴더 (⇧⌘N)
 
     func makeNewFolder() -> URL? {
-        let dest = uniqueDestination(currentURL.appendingPathComponent("새 폴더"))
+        let dest = CopyQueue.uniqueDestination(currentURL.appendingPathComponent("새 폴더"))
         do {
             try FileManager.default.createDirectory(at: dest, withIntermediateDirectories: false)
         } catch {
@@ -387,43 +439,46 @@ final class PaneModel: ObservableObject {
     }
 
     // MARK: 복사 (끌어다 놓기, ⌘V)
+    // 실제 복사는 CopyQueue가 백그라운드에서 합니다(진행률 표시, 앱 안 멈춤).
     // 원본은 그대로 남습니다. 같은 이름이 있으면 덮어쓰지 않고 "이름 2"로 저장합니다.
     // duplicateInSameFolder: 같은 폴더에 붙여넣으면 사본을 만듦(⌘V). 끌어다 놓기에서는 무시.
 
     func copyIn(_ sources: [URL], duplicateInSameFolder: Bool = false) {
-        var failed: [String] = []
+        var refused: [String] = []
+        var accepted: [URL] = []
         for src in sources {
             if isSameFolder(src) && !duplicateInSameFolder { continue }
             if isInsideItself(src) {
-                failed.append(src.lastPathComponent + "(자기 안으로는 복사할 수 없음)")
+                refused.append(src.lastPathComponent + "(자기 안으로는 복사할 수 없음)")
                 continue
             }
-            let dest = uniqueDestination(currentURL.appendingPathComponent(src.lastPathComponent))
-            do {
-                try FileManager.default.copyItem(at: src, to: dest)
-            } catch {
-                failed.append(src.lastPathComponent)
-            }
+            accepted.append(src)
         }
-        PaneModel.refreshPanes(showing: [currentURL])
-        if !failed.isEmpty {
-            errorMessage = "복사 실패: " + failed.joined(separator: ", ")
+        CopyQueue.shared.enqueue(accepted, to: currentURL, move: false)
+        if !refused.isEmpty {
+            errorMessage = "복사 실패: " + refused.joined(separator: ", ")
         }
     }
 
     // MARK: 이동 (⌘ 누른 채 끌어다 놓기, ⌥⌘V)
-    // 원본이 원래 자리에서 사라지고 이 칸의 폴더로 옮겨집니다.
+    // 같은 디스크 안: 바로 옮김(순간적으로 끝남).
+    // 다른 디스크로: 백그라운드에서 복사한 뒤 원본을 휴지통으로 (CopyQueue).
 
     func moveIn(_ sources: [URL]) {
         var failed: [String] = []
         var folders: [URL] = [currentURL]
+        var otherDisk: [URL] = []
         for src in sources {
             if isSameFolder(src) { continue }
             if isInsideItself(src) {
                 failed.append(src.lastPathComponent + "(자기 안으로는 옮길 수 없음)")
                 continue
             }
-            let dest = uniqueDestination(currentURL.appendingPathComponent(src.lastPathComponent))
+            guard isSameVolume(src, currentURL) else {
+                otherDisk.append(src)
+                continue
+            }
+            let dest = CopyQueue.uniqueDestination(currentURL.appendingPathComponent(src.lastPathComponent))
             do {
                 try FileManager.default.moveItem(at: src, to: dest)
                 folders.append(src.deletingLastPathComponent())
@@ -432,9 +487,17 @@ final class PaneModel: ObservableObject {
             }
         }
         PaneModel.refreshPanes(showing: folders)
+        CopyQueue.shared.enqueue(otherDisk, to: currentURL, move: true)
         if !failed.isEmpty {
             errorMessage = "이동 실패: " + failed.joined(separator: ", ")
         }
+    }
+
+    private func isSameVolume(_ a: URL, _ b: URL) -> Bool {
+        let va = (try? a.resourceValues(forKeys: [.volumeIdentifierKey]))?.volumeIdentifier as? NSObject
+        let vb = (try? b.resourceValues(forKeys: [.volumeIdentifierKey]))?.volumeIdentifier as? NSObject
+        guard let va, let vb else { return false }
+        return va.isEqual(vb)
     }
 
     private func isSameFolder(_ src: URL) -> Bool {
@@ -446,20 +509,5 @@ final class PaneModel: ObservableObject {
         let s = src.standardizedFileURL.path
         let here = currentURL.standardizedFileURL.path
         return here == s || here.hasPrefix(s + "/")
-    }
-
-    // 같은 이름이 있으면 덮어쓰지 않고 "이름 2.확장자" 식으로 새 이름을 만듦
-    private func uniqueDestination(_ url: URL) -> URL {
-        guard FileManager.default.fileExists(atPath: url.path) else { return url }
-        let base = url.deletingPathExtension().lastPathComponent
-        let ext = url.pathExtension
-        let dir = url.deletingLastPathComponent()
-        var n = 2
-        while true {
-            let name = ext.isEmpty ? "\(base) \(n)" : "\(base) \(n).\(ext)"
-            let candidate = dir.appendingPathComponent(name)
-            if !FileManager.default.fileExists(atPath: candidate.path) { return candidate }
-            n += 1
-        }
     }
 }

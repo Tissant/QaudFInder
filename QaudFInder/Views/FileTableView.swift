@@ -194,6 +194,7 @@ struct FileTableView: NSViewRepresentable {
             guard let id = tableColumn?.identifier, row < items.count else { return nil }
             let item = items[row]
             let cell = (tableView.makeView(withIdentifier: id, owner: nil) as? NSTableCellView) ?? Self.makeCell(id)
+            cell.alphaValue = item.isHidden ? 0.5 : 1      // 숨김 파일은 흐리게
 
             switch id {
             case .name:

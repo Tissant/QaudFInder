@@ -32,6 +32,7 @@ enum ListKey {
     case copy                    // ⌘C
     case paste(move: Bool)       // ⌘V 복사해서 붙여넣기 / ⌥⌘V 옮기기
     case copyPath                // ⌥⌘C 경로 복사
+    case toggleHidden            // ⇧⌘. 숨김 파일 보기/가리기
     case tab(backward: Bool)     // Tab / ⇧Tab
     case escape
 
@@ -49,6 +50,7 @@ enum ListKey {
         case (45, shiftCmd):      self = .newFolder     // N
         case (8, cmd):            self = .copy          // C
         case (8, optCmd):         self = .copyPath
+        case (47, shiftCmd):      self = .toggleHidden  // .
         case (9, cmd):            self = .paste(move: false)   // V
         case (9, optCmd):         self = .paste(move: true)
         case (48, []):            self = .tab(backward: false)
@@ -244,6 +246,7 @@ final class FileCommands: NSObject, NSMenuDelegate {
         case .copy:              model.copyToPasteboard(host.selectedURLs)
         case .paste(let move):   model.pasteFromPasteboard(move: move)
         case .copyPath:          model.copyPaths(host.selectedURLs)
+        case .toggleHidden:      model.toggleHidden()
         case .tab(let backward): events?.tab(backward)
         case .escape:            events?.escape()
         }
@@ -290,6 +293,9 @@ final class FileCommands: NSObject, NSMenuDelegate {
             add("경로 복사", #selector(menuCopyPath), key: "c", flags: [.command, .option])
             add("Finder에서 보기", #selector(menuReveal))
             add("이 폴더를 사이드바에 추가", #selector(menuAddToSidebar))
+            menu.addItem(.separator())
+            add(model?.showHidden == true ? "숨김 파일 가리기" : "숨김 파일 보기",
+                #selector(menuToggleHidden), key: ".", flags: [.command, .shift])
         }
     }
 
@@ -311,6 +317,7 @@ final class FileCommands: NSObject, NSMenuDelegate {
     @objc private func menuNewFolder() { handle(.newFolder) }
     @objc private func menuPaste()     { handle(.paste(move: false)) }
     @objc private func menuReveal()    { model?.revealInFinder(host?.selectedURLs ?? []) }
+    @objc private func menuToggleHidden() { handle(.toggleHidden) }
     @objc private func menuAddToSidebar() {
         guard let model else { return }
         let urls = host?.selectedURLs ?? []

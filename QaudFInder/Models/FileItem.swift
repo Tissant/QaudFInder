@@ -30,5 +30,6 @@ struct FileItem: Identifiable, Hashable {
     let size: Int64?        // 폴더는 nil
     let modified: Date?
     let kind: String        // "폴더", "PDF 문서" 같은 종류 설명
+    let isHidden: Bool      // 숨김 파일 (흐리게 표시)
     var id: URL { url }
 }
