@@ -86,7 +86,7 @@ Dragging files *out* to Finder or other apps is always a copy.
    - (On older macOS versions you can also right-click the app → **Open**.)
 4. Allow access when macOS asks about your Desktop, Documents or Downloads folders.
 
-**Requirements:** macOS 27.2 or later.
+**Requirements:** macOS 27.2 or later on an Apple silicon Mac.
 
 ## Build from source
 
