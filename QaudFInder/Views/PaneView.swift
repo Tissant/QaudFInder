@@ -96,7 +96,7 @@ struct PaneView: View {
     }
 
     // MARK: 위쪽 막대
-    // ‹ › ↑  /Users/tissant/Desktop      [아이콘|리스트] ⟳ (병합 해제)
+    // ‹ › ↑  /Users/me/Desktop      [아이콘|리스트] ⟳ (병합 해제)
     // 이 막대를 ⌘ 클릭(또는 ⌘ 드래그)하면 병합할 칸을 고를 수 있습니다.
 
     private var header: some View {
@@ -190,7 +190,7 @@ struct PaneView: View {
         .help(help)
     }
 
-    // MARK: 아래쪽 경로 막대: Macintosh HD › 사용자 › tissant › 데스크탑
+    // MARK: 아래쪽 경로 막대: Macintosh HD › 사용자 › me › 데스크탑
 
     private var pathBar: some View {
         ScrollView(.horizontal, showsIndicators: false) {

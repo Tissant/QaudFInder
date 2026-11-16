@@ -277,7 +277,7 @@ final class PaneModel: ObservableObject {
         computeFolderSize()
     }
 
-    // 아래쪽 경로 막대용: [/, /Users, /Users/tissant, /Users/tissant/Desktop]
+    // 아래쪽 경로 막대용: [/, /Users, /Users/me, /Users/me/Desktop]
     var pathComponents: [URL] {
         var result: [URL] = []
         var u = currentURL.standardizedFileURL
