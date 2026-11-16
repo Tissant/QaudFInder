@@ -15,7 +15,9 @@
 
 ---
 
-<!-- SCREENSHOT -->
+<p align="center">
+  <img src="docs/images/screenshot.webp" width="800" alt="QaudFInder main window: four panes with icon and list views">
+</p>
 
 ## Why QaudFInder?
 

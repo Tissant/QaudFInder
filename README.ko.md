@@ -15,7 +15,9 @@
 
 ---
 
-<!-- SCREENSHOT -->
+<p align="center">
+  <img src="docs/images/screenshot.webp" width="800" alt="QaudFInder 메인 화면: 아이콘·리스트 보기를 섞은 칸 4개">
+</p>
 
 ## 왜 QaudFInder인가요?
 
