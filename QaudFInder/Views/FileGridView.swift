@@ -10,6 +10,8 @@
 //  - 더블클릭 열기, 단축키·우클릭 메뉴 (ListSupport.swift의 ListKey, FileCommands)
 //  - 이름 바꾸기: Return을 누르면 이름 글자가 그 자리에서 편집 상태가 됨
 //  - 이름 입력으로 바로 찾기 (type-select)
+//  - 파일 내용 미리보기(썸네일) 아이콘
+//  - 아이콘 크기 조절 (칸별, PaneModel.iconScale: 0.5 ~ 2배)
 //
 
 import SwiftUI
@@ -30,7 +32,7 @@ struct FileGridView: NSViewRepresentable {
         c.lastFocusRequest = model.focusRequest
 
         let layout = NSCollectionViewFlowLayout()
-        layout.itemSize = NSSize(width: 88, height: 96)
+        layout.itemSize = IconMetrics(scale: model.iconScale).itemSize
         layout.minimumInteritemSpacing = 6
         layout.minimumLineSpacing = 6
         layout.sectionInset = NSEdgeInsets(top: 8, left: 8, bottom: 8, right: 8)
@@ -94,6 +96,7 @@ struct FileGridView: NSViewRepresentable {
         let renamer = RenameEditor()
         var lastFocusRequest = 0
         private var items: [FileItem] = []
+        private var shownScale: Double = 1.0
 
         init(_ parent: FileGridView) {
             self.parent = parent
@@ -102,6 +105,18 @@ struct FileGridView: NSViewRepresentable {
         // 모델의 목록·선택을 화면에 반영
         func apply(model: PaneModel) {
             guard let grid else { return }
+            // 아이콘 크기가 바뀌면: 칸 크기를 바꾸고, 보이는 아이콘만 즉시 크기 조절 (선택·스크롤 유지)
+            if model.iconScale != shownScale {
+                shownScale = model.iconScale
+                let metrics = IconMetrics(scale: shownScale)
+                if let layout = grid.collectionViewLayout as? NSCollectionViewFlowLayout {
+                    layout.itemSize = metrics.itemSize
+                    layout.invalidateLayout()
+                }
+                for case let icon as IconItem in grid.visibleItems() {
+                    icon.setIconSize(metrics.iconSize)
+                }
+            }
             if items != model.items {
                 let folderChanged = items.first?.url.deletingLastPathComponent() != model.items.first?.url.deletingLastPathComponent()
                 items = model.items
@@ -179,7 +194,7 @@ struct FileGridView: NSViewRepresentable {
                             itemForRepresentedObjectAt indexPath: IndexPath) -> NSCollectionViewItem {
             let item = collectionView.makeItem(withIdentifier: IconItem.id, for: indexPath)
             if let icon = item as? IconItem, indexPath.item < items.count {
-                icon.configure(items[indexPath.item])
+                icon.configure(items[indexPath.item], iconSize: IconMetrics(scale: shownScale).iconSize)
             }
             return item
         }
@@ -243,6 +258,19 @@ struct FileGridView: NSViewRepresentable {
     }
 }
 
+// MARK: - 아이콘 크기 계산 (배율 1 = 지금까지의 크기: 아이콘 48pt, 칸 88×94)
+
+struct IconMetrics {
+    let iconSize: CGFloat
+    let itemSize: NSSize
+
+    init(scale: Double) {
+        iconSize = (48 * scale).rounded()
+        let width = max(80, iconSize + 40)                 // 이름 두 줄이 들어갈 너비는 확보
+        itemSize = NSSize(width: width, height: iconSize + 8 + 2 + 36)
+    }
+}
+
 // MARK: - 아이콘 하나 (아이콘 + 이름 두 줄)
 
 final class IconItem: NSCollectionViewItem {
@@ -252,6 +280,9 @@ final class IconItem: NSCollectionViewItem {
     private let icon = NSImageView()
     private let label = NSTextField(wrappingLabelWithString: "")
     var nameField: NSTextField { label }                 // 이름 바꾸기 때 편집할 글자 칸
+    private var iconSizeConstraints: [NSLayoutConstraint] = []
+    private var backgroundSizeConstraints: [NSLayoutConstraint] = []
+    private var shownURL: URL? = nil                     // 미리보기가 늦게 도착했을 때 확인용
 
     override func loadView() {
         let root = NSView(frame: NSRect(x: 0, y: 0, width: 88, height: 96))
@@ -278,16 +309,22 @@ final class IconItem: NSCollectionViewItem {
         NSLayoutConstraint.activate([
             iconBackground.topAnchor.constraint(equalTo: root.topAnchor, constant: 2),
             iconBackground.centerXAnchor.constraint(equalTo: root.centerXAnchor),
-            iconBackground.widthAnchor.constraint(equalToConstant: 56),
-            iconBackground.heightAnchor.constraint(equalToConstant: 56),
             icon.centerXAnchor.constraint(equalTo: iconBackground.centerXAnchor),
             icon.centerYAnchor.constraint(equalTo: iconBackground.centerYAnchor),
-            icon.widthAnchor.constraint(equalToConstant: 48),
-            icon.heightAnchor.constraint(equalToConstant: 48),
             label.topAnchor.constraint(equalTo: iconBackground.bottomAnchor, constant: 3),
             label.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 2),
             label.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -2),
         ])
+
+        backgroundSizeConstraints = [
+            iconBackground.widthAnchor.constraint(equalToConstant: 56),
+            iconBackground.heightAnchor.constraint(equalToConstant: 56),
+        ]
+        iconSizeConstraints = [
+            icon.widthAnchor.constraint(equalToConstant: 48),
+            icon.heightAnchor.constraint(equalToConstant: 48),
+        ]
+        NSLayoutConstraint.activate(backgroundSizeConstraints + iconSizeConstraints)
 
         view = root
         imageView = icon
@@ -295,8 +332,23 @@ final class IconItem: NSCollectionViewItem {
         updateLook()
     }
 
-    func configure(_ item: FileItem) {
-        icon.image = NSWorkspace.shared.icon(forFile: item.url.path)
+    func setIconSize(_ size: CGFloat) {
+        iconSizeConstraints.forEach { $0.constant = size }
+        backgroundSizeConstraints.forEach { $0.constant = size + 8 }
+    }
+
+    func configure(_ item: FileItem, iconSize: CGFloat) {
+        setIconSize(iconSize)
+        shownURL = item.url
+        // 먼저 기본 아이콘, 내용 미리보기가 준비되면 바꿔 끼움
+        if let thumb = ThumbnailCache.shared.thumbnail(for: item, done: { [weak self] image in
+            guard let self, self.shownURL == item.url else { return }
+            self.icon.image = image
+        }) {
+            icon.image = thumb
+        } else {
+            icon.image = NSWorkspace.shared.icon(forFile: item.url.path)
+        }
         label.stringValue = item.name
         view.alphaValue = item.isHidden ? 0.5 : 1          // 숨김 파일은 흐리게
         updateLook()

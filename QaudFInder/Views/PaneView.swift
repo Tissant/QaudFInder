@@ -23,6 +23,7 @@ struct PaneView: View {
     var onEscape: () -> Void
 
     @State private var isDropTarget = false
+    @State private var showIconSize = false     // 아이콘 크기 슬라이더 창
 
     var body: some View {
         VStack(spacing: 0) {
@@ -117,14 +118,17 @@ struct PaneView: View {
             Spacer(minLength: 0)
 
             // 보기 방식 전환 (Finder처럼 아이콘만)
-            Picker("보기 방식", selection: $model.viewMode) {
-                Image(systemName: "square.grid.2x2").tag(ViewMode.icon)
-                Image(systemName: "list.bullet").tag(ViewMode.list)
+            // 보기 방식 전환 [아이콘|리스트] — ⌘ 누른 채 아이콘 버튼을 누르면 아이콘 크기 슬라이더
+            HStack(spacing: 2) {
+                viewModeButton(.icon, symbol: "square.grid.2x2",
+                               help: "아이콘 보기 (⌘ 누른 채 클릭: 아이콘 크기 조절)")
+                    .popover(isPresented: $showIconSize, arrowEdge: .bottom) {
+                        IconSizePopover(scale: $model.iconScale) { showIconSize = false }
+                    }
+                viewModeButton(.list, symbol: "list.bullet", help: "리스트 보기")
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .fixedSize()
-            .help("보기 방식")
+            .padding(2)
+            .background(RoundedRectangle(cornerRadius: 7).fill(Color.primary.opacity(0.08)))
 
             Button { model.reload() } label: { Image(systemName: "arrow.clockwise") }
                 .help("새로고침")
@@ -162,6 +166,28 @@ struct PaneView: View {
                     }
                 }
         )
+    }
+
+    // 보기 방식 버튼 하나 (선택된 쪽은 강조색 바탕에 흰 아이콘)
+    private func viewModeButton(_ mode: ViewMode, symbol: String, help: String) -> some View {
+        let selected = model.viewMode == mode
+        return Button {
+            if mode == .icon && NSEvent.modifierFlags.contains(.command) {
+                model.viewMode = .icon
+                showIconSize = true
+            } else {
+                model.viewMode = mode
+            }
+        } label: {
+            Image(systemName: symbol)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(selected ? Color.white : Color.primary)
+                .frame(width: 28, height: 20)
+                .background(RoundedRectangle(cornerRadius: 5).fill(selected ? Color.accentColor : Color.clear))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(help)
     }
 
     // MARK: 아래쪽 경로 막대: Macintosh HD › 사용자 › tissant › 데스크탑

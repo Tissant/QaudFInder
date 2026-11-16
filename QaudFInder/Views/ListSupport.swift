@@ -176,14 +176,25 @@ final class PreviewController: NSObject {
         panel.delegate = nil
     }
 
-    // 선택이 바뀌었을 때 창이 떠 있으면 새 파일로 바꿔 보여 줌
+    // 선택이 바뀌었을 때 창이 떠 있으면 새 파일로 바꿔 보여 줌.
+    // 아이콘 보기는 방향키로 움직이면 "예전 것 선택 해제 → 새 것 선택" 두 단계로 알려 주는데,
+    // 그 사이 잠깐 선택이 비어 보여서 창이 닫히던 문제가 있었음.
+    // → 바로 판단하지 않고 한 박자 미뤘다가, 두 단계가 다 끝난 최종 선택으로 판단.
+    private var refreshPending = false
+
     func refresh() {
-        guard isControlling, QLPreviewPanel.sharedPreviewPanelExists(),
-              let panel = QLPreviewPanel.shared(), panel.isVisible else { return }
-        if model?.previewTarget == nil {
-            panel.orderOut(nil)
-        } else {
-            panel.reloadData()
+        guard isControlling, !refreshPending else { return }
+        refreshPending = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.refreshPending = false
+            guard self.isControlling, QLPreviewPanel.sharedPreviewPanelExists(),
+                  let panel = QLPreviewPanel.shared(), panel.isVisible else { return }
+            if self.model?.previewTarget == nil {
+                panel.orderOut(nil)
+            } else {
+                panel.reloadData()
+            }
         }
     }
 }

@@ -25,6 +25,10 @@ final class PaneModel: ObservableObject {
     @Published private(set) var sortAscending: Bool
     @Published private(set) var focusRequest = 0     // 숫자가 바뀌면 목록이 키보드 포커스를 가져감
     @Published private(set) var showHidden: Bool     // 숨김 파일 보기 (⇧⌘., 칸별 저장)
+    @Published private(set) var reloadCount = 0      // 새로고침할 때마다 +1 (펼친 하위 폴더도 다시 읽게)
+    // 아이콘 보기의 아이콘 크기 배율 (0.5 Small ~ 1 Normal ~ 1.5 Big ~ 2 Huge).
+    // 칸별로 적용하고, 앱을 다시 켜면 1(Normal)로 돌아감 → 저장하지 않음
+    @Published var iconScale: Double = 1.0
 
     private var backStack: [URL] = []
     private var forwardStack: [URL] = []
@@ -165,14 +169,14 @@ final class PaneModel: ObservableObject {
     }
 
     // 더블클릭·Return·⌘↓: 폴더 하나면 들어가고, 파일이면 기본 앱으로 열기
+    // (리스트 보기에서 펼친 하위 폴더 안의 항목도 올 수 있어서 목록이 아니라 주소로 판단)
     func activate(_ urls: [URL]) {
-        let chosen = items.filter { urls.contains($0.url) }
-        if chosen.count == 1, let only = chosen.first, only.isDirectory {
-            open(only.url)
+        if urls.count == 1, let only = urls.first, SidebarModel.isFolder(only) {
+            open(only)
             return
         }
-        for item in chosen where !item.isDirectory {
-            NSWorkspace.shared.open(item.url)
+        for url in urls where !SidebarModel.isFolder(url) {
+            NSWorkspace.shared.open(url)
         }
     }
 
@@ -228,30 +232,36 @@ final class PaneModel: ObservableObject {
     // MARK: 목록 읽기
 
     // keepError: 자동 새로고침일 때는 화면의 안내 문구(복사 실패 등)를 지우지 않음
-    func reload(keepError: Bool = false) {
+    // 폴더 하나의 내용을 읽어서 정렬된 목록으로 (지금 폴더, 펼친 하위 폴더 모두 사용)
+    func loadItems(in folder: URL) throws -> [FileItem] {
         let keys: [URLResourceKey] = [
             .isDirectoryKey, .isPackageKey, .fileSizeKey, .isHiddenKey,
             .contentModificationDateKey, .localizedNameKey, .localizedTypeDescriptionKey
         ]
-        do {
-            let urls = try FileManager.default.contentsOfDirectory(
-                at: currentURL,
-                includingPropertiesForKeys: keys,
-                options: showHidden ? [] : [.skipsHiddenFiles]   // 숨김 파일은 ⇧⌘. 로 켰을 때만
+        let urls = try FileManager.default.contentsOfDirectory(
+            at: folder,
+            includingPropertiesForKeys: keys,
+            options: showHidden ? [] : [.skipsHiddenFiles]   // 숨김 파일은 ⇧⌘. 로 켰을 때만
+        )
+        return sorted(urls.map { u in
+            let v = try? u.resourceValues(forKeys: Set(keys))
+            let isDir = (v?.isDirectory ?? false) && !(v?.isPackage ?? false)
+            return FileItem(
+                url: u,
+                name: v?.localizedName ?? u.lastPathComponent,
+                isDirectory: isDir,
+                size: isDir ? nil : v?.fileSize.map { Int64($0) },
+                modified: v?.contentModificationDate,
+                kind: v?.localizedTypeDescription ?? "",
+                isHidden: (v?.isHidden ?? false) || u.lastPathComponent.hasPrefix(".")
             )
-            let newItems = sorted(urls.map { u in
-                let v = try? u.resourceValues(forKeys: Set(keys))
-                let isDir = (v?.isDirectory ?? false) && !(v?.isPackage ?? false)
-                return FileItem(
-                    url: u,
-                    name: v?.localizedName ?? u.lastPathComponent,
-                    isDirectory: isDir,
-                    size: isDir ? nil : v?.fileSize.map { Int64($0) },
-                    modified: v?.contentModificationDate,
-                    kind: v?.localizedTypeDescription ?? "",
-                    isHidden: (v?.isHidden ?? false) || u.lastPathComponent.hasPrefix(".")
-                )
-            })
+        })
+    }
+
+    func reload(keepError: Bool = false) {
+        reloadCount += 1
+        do {
+            let newItems = try loadItems(in: currentURL)
             if newItems != items { items = newItems }       // 바뀐 게 있을 때만 화면 갱신
             if !keepError { errorMessage = nil }
         } catch {
@@ -259,9 +269,9 @@ final class PaneModel: ObservableObject {
             errorMessage = "이 폴더를 열 수 없습니다: \(error.localizedDescription)"
         }
 
-        // 지워진 파일은 선택에서 빼기
+        // 지워진 파일은 선택에서 빼기 (펼친 하위 폴더 안의 항목은 실제로 있는지 확인)
         let existing = Set(items.map { $0.url })
-        let kept = selection.filter { existing.contains($0) }
+        let kept = selection.filter { existing.contains($0) || FileManager.default.fileExists(atPath: $0.path) }
         if kept != selection { selection = kept }
 
         computeFolderSize()
@@ -332,10 +342,15 @@ final class PaneModel: ObservableObject {
     // MARK: 다른 칸 새로고침
     // 파일을 바꾼 뒤, 바뀐 폴더를 보고 있는 칸(이 칸 포함)을 모두 새로고침합니다.
 
+    // 바뀐 폴더가 그 칸의 지금 폴더이거나, 그 안의 하위 폴더(리스트 보기에서 펼쳐 볼 수 있음)이면 새로고침
     static func refreshPanes(showing folders: [URL]) {
         let paths = Set(folders.map { $0.standardizedFileURL.path })
-        for pane in allPanes.allObjects where paths.contains(pane.currentURL.standardizedFileURL.path) {
-            pane.reload()
+        for pane in allPanes.allObjects {
+            let here = pane.currentURL.standardizedFileURL.path
+            let prefix = here == "/" ? "/" : here + "/"
+            if paths.contains(here) || paths.contains(where: { $0.hasPrefix(prefix) }) {
+                pane.reload()
+            }
         }
     }
 
@@ -393,7 +408,7 @@ final class PaneModel: ObservableObject {
             errorMessage = "이름을 바꾸지 못했습니다: \(error.localizedDescription)"
             return nil
         }
-        PaneModel.refreshPanes(showing: [currentURL])
+        PaneModel.refreshPanes(showing: [currentURL, url.deletingLastPathComponent()])
         selection = [dest]
         anchor = dest
         return dest
