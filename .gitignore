@@ -4,5 +4,5 @@ build/
 DerivedData/
 build.log
 CLAUDE.md
-HANDOFF.md
+HANDOFF*.md
 xcuserdata/
