@@ -160,6 +160,22 @@ The first version after the public release (Release v1.0). From here on, version
 - **Changes after testing:** the slider popover covered too much of the window, so it shrank to 60% width and about half the height → text 10% larger → evenly spaced ticks instead of labels for icon size → path editing on double-click instead of a single click.
 - **Moved to the next version:** "Layout at launch (columns × rows, up to 6 panes)" goes into 1.2.0 (free splitting), which rebuilds the pane structure.
 
+### 1.2.0. Free splitting
+
+The "four fixed panes, two shown merged for a while" structure became a **layout tree** (split an area left/right or top/bottom, then split either side again). Because this rebuilds the core structure, the design was reviewed as a document first, and the layout math (`PaneLayout`) was checked with a small test program (23 checks) before it went into the app. Built in two stages with a hands-on test in between.
+
+| Stage | Feature | Details |
+|---|---|---|
+| 1 | Split | `⌘`-click the active pane's top bar → *Split Left/Right* / *Split Top/Bottom* at its top-left. The new pane opens the same folder and view mode. Up to 6 panes; a notice if the pane is too narrow |
+| 1 | Merge | `⌘`-click a pane next to the active pane → *Merge* right away. Any two panes that form a rectangle, even with different folders, down to one pane. Panes that can't be merged don't react. The unmerge button is gone |
+| 1 | Drawing | Instead of nested SplitViews, panes are placed at computed positions and the dividers are drawn directly → splitting or merging keeps the other panes' lists and scroll positions |
+| 2 | Remember layout | The tree and divider positions are saved as `layout.tree` (JSON). Pane keys (`pane0`…) are reused, so 1.1.0 pane state carries over without a reset |
+| 2 | Startup layout | Settings → General: *Last layout* / *This grid*, 1–3 columns × 1–3 rows (no 3×3), click a preview cell to pick its start folder, 6 start folders |
+| 2 | Active-pane folder size | Only the active pane computes its folder size, so many panes cost almost nothing at launch. A finished value stays while the pane shows that folder |
+
+- **Changed from the plan:** merging allows "any two panes that form a rectangle" instead of "only a pair split from each other"; otherwise top/bottom merging in a 2×2 grid would be impossible, a step back from 1.1.0. Dividers that are slightly off (within 4%) are snapped when merging.
+- **Changes after testing:** with an active pane, one `⌘`-click on an adjacent pane shows *Merge*; panes that can't be merged are ignored without a notice → fixed panes being clipped on both sides when the window shrank (the area was measured by its own fixed-size panes); the window can no longer shrink below the layout's minimum size.
+
 ---
 
 ## 4. Problems and solutions
@@ -177,6 +193,7 @@ The first version after the public release (Release v1.0). From here on, version
 | 9 | Quick Look closed on arrow keys in icon view | The collection view reports "deselect → select" in two steps, so the selection looks empty for a moment | Defer the Quick Look refresh by one run-loop turn and use the final selection |
 | 10 | Shortcuts recorded with a Korean input source showed as "⌥⌘ㅅ" | The typed character depends on the input source | Derive the English letter from the key position (as Finder menus do) |
 | 11 | Services appear directly in the context menu instead of under "Services ▸" | macOS inlines services when there are only a few | Expected behavior; unwanted items can be turned off in System Settings → Keyboard → Keyboard Shortcuts → Services |
+| 12 | Shrinking the window clipped the panes on both sides | The pane area was measured by the fixed-size panes inside it, so it never saw the smaller size | Measure the outer size with `GeometryReader`; window minimum size follows the layout (`windowResizability(.contentMinSize)`) |
 
 ---
 
@@ -193,6 +210,7 @@ The first version after the public release (Release v1.0). From here on, version
 | Release | MIT license, English & Korean docs, public repository |
 | 1.1.0 planning | Free splitting (split any pane, remove the unmerge button), bring back Get Info and archive/extract, `major.minor.patch` version numbers |
 | 1.1.0 | Path editing on double-click, Shortcuts tab in Settings, at most 6 panes (9 is too small on a laptop screen) |
+| 1.2.0 | Merge any two panes forming a rectangle, *This grid* always uses the start folders, panes 5–6 default to Home, no max-pane setting and no keyboard splitting, one `⌘`-click next to the active pane to merge |
 
 **Intentionally left out:** permanent delete, batch rename, tags, tabs, recursive search (`⌘F`), NAS connections.
 (Archive/extract and Get Info (`⌘I`) were brought back during 1.1.0 planning → planned for 1.3.0 and 1.4.0.)
@@ -201,7 +219,6 @@ The first version after the public release (Release v1.0). From here on, version
 
 ## 6. Possible next steps
 
-- Remember merged panes across launches (currently reset on relaunch) → to be solved by "remember layout" in 1.2.0
 - Undo (`⌘Z`) — for now, *Put Back* from the Trash
 - Auto-refresh for expanded subfolders changed by other apps (use ⟳ for now)
 

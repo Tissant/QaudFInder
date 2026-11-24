@@ -11,13 +11,11 @@ import UniformTypeIdentifiers
 
 struct PaneView: View {
     @ObservedObject var model: PaneModel
-    var isMergeSelected: Bool              // 병합하려고 ⌘ 클릭으로 고른 칸인지 (파란 테두리)
-    var isMerged: Bool                     // 병합된 칸인지 (병합 해제 버튼 표시)
+    var isMergeSelected: Bool              // 나누기·합치기하려고 ⌘ 클릭으로 고른 칸인지 (파란 테두리)
     var isActive: Bool                     // 지금 키보드로 다루는 칸인지 (강조색 테두리)
     var onCmdClick: () -> Void
     var onPlainClick: () -> Void           // 칸을 그냥 클릭 → 병합 선택 취소 + 활성 칸으로
     var onCmdDragEnd: (CGPoint) -> Void
-    var onUnmerge: () -> Void
     var onActivate: () -> Void             // 목록이 키보드 입력을 받게 됨
     var onTab: (_ backward: Bool) -> Void  // Tab / ⇧Tab
     var onEscape: () -> Void
@@ -55,7 +53,7 @@ struct PaneView: View {
                 .stroke(Color.accentColor.opacity(0.7), lineWidth: isActive ? 2 : 0)
                 .allowsHitTesting(false)
         }
-        // 병합하려고 선택된 칸의 파란 테두리
+        // 나누기·합치기하려고 고른 칸의 파란 테두리
         .overlay {
             RoundedRectangle(cornerRadius: 4)
                 .stroke(Color.blue, lineWidth: isMergeSelected ? 3 : 0)
@@ -96,8 +94,8 @@ struct PaneView: View {
     }
 
     // MARK: 위쪽 막대
-    // ‹ › ↑  /Users/me/Desktop      [아이콘|리스트] ⟳ (병합 해제)
-    // 이 막대를 ⌘ 클릭(또는 ⌘ 드래그)하면 병합할 칸을 고를 수 있습니다.
+    // ‹ › ↑  /Users/me/Desktop      [아이콘|리스트] ⟳
+    // 이 막대를 ⌘ 클릭하면 칸 나누기, 다른 칸도 ⌘ 클릭(또는 ⌘ 드래그)하면 합치기 (1.2.0)
 
     private var header: some View {
         HStack(spacing: 8) {
@@ -130,25 +128,13 @@ struct PaneView: View {
 
             Button { model.reload() } label: { Image(systemName: "arrow.clockwise") }
                 .help("새로고침")
-
-            if isMerged {
-                Button { onUnmerge() } label: {
-                    // 끊어진 링크 모양: 링크 아이콘 위에 빨간 사선
-                    Image(systemName: "link")
-                        .overlay(
-                            Image(systemName: "line.diagonal")
-                                .font(.system(size: 14, weight: .bold))
-                                .foregroundStyle(.red)
-                        )
-                }
-                .help("병합 해제")
-            }
         }
         .buttonStyle(.borderless)
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
         .background(isMergeSelected ? Color.blue.opacity(0.08) : Color.clear)
         .contentShape(Rectangle())
+        .help("⌘+클릭: 칸 나누기·합치기")
         .onTapGesture {
             if NSEvent.modifierFlags.contains(.command) {
                 onCmdClick()

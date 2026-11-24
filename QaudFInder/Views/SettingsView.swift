@@ -28,13 +28,14 @@ struct SettingsView: View {
 
 private struct GeneralSettings: View {
     @ObservedObject private var settings = AppSettings.shared
-    private let names = ["왼쪽 위 칸", "오른쪽 위 칸", "왼쪽 아래 칸", "오른쪽 아래 칸"]
 
     var body: some View {
         Form {
+            StartLayoutSection()
+
             Section {
-                ForEach(0..<4, id: \.self) { i in
-                    LabeledContent(names[i]) {
+                ForEach(0..<settings.startFolders.count, id: \.self) { i in
+                    LabeledContent("\(i + 1)번 칸") {
                         HStack(spacing: 6) {
                             Image(nsImage: NSWorkspace.shared.icon(forFile: settings.startFolders[i]))
                                 .resizable()
@@ -43,31 +44,19 @@ private struct GeneralSettings: View {
                                 .lineLimit(1)
                                 .truncationMode(.middle)
                                 .help(settings.startFolders[i])
-                            Button("선택…") { choose(i) }
+                            Button("선택…") { chooseStartFolder(i) }
                         }
                     }
                 }
             } header: {
                 Text("칸별 시작 폴더")
             } footer: {
-                Text("새 창(⌘N)과, 지난번 상태가 없을 때 이 폴더로 시작합니다. 첫 번째 창은 지난번에 보던 폴더를 그대로 엽니다.")
+                Text("번호는 위 미리보기의 칸 번호(왼쪽 위부터 글 읽는 순서)입니다. 「지난번 배치 그대로」일 때 첫 번째 창은 지난번에 보던 폴더를 그대로 엽니다.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
-    }
-
-    private func choose(_ i: Int) {
-        let panel = NSOpenPanel()
-        panel.title = "\(names[i]) 시작 폴더"
-        panel.prompt = "선택"
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = false
-        panel.directoryURL = URL(fileURLWithPath: settings.startFolders[i])
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        settings.startFolders[i] = url.standardizedFileURL.path
     }
 }
 

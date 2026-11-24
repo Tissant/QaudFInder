@@ -5,8 +5,8 @@
 //  모든 값은 이 맥의 앱 설정(UserDefaults)에만 저장합니다. 키는 "settings."으로 시작합니다.
 //  기본값은 1.0의 동작과 같게 정해서, 설정을 건드리지 않으면 예전과 똑같이 동작합니다.
 //
-//  나중 버전에서 더할 설정: 시작할 때 칸 배치·최대 칸 수(1.2.0 자유 분할),
-//  풀고 난 원본 zip·숨김 파일 빼기·보조 압축 앱(1.4.0 압축)
+//  1.2.0: 시작할 때 칸 배치(지난번 그대로 / 이 배열로), 가로·세로 배열, 칸별 시작 폴더 6개
+//  나중 버전에서 더할 설정: 풀고 난 원본 zip·숨김 파일 빼기·보조 압축 앱(1.4.0 압축)
 //
 
 import Foundation
@@ -24,8 +24,24 @@ final class AppSettings: ObservableObject {
 
     // MARK: 일반
 
-    // 칸별 시작 폴더 (칸 0~3). 지난번 상태가 없을 때와 ⌘N으로 연 창에서 씀
+    // 칸별 시작 폴더 (칸 번호 0~5 = 배열 미리보기의 1~6번). 새 창(⌘N), 지난번 상태가 없을 때, "이 배열로 시작"일 때 씀
     @Published var startFolders: [String] { didSet { save(startFolders, "startFolders") } }
+
+    // 시작할 때 칸 배치: false = 지난번 배치 그대로, true = 이 배열로 시작(매번 칸별 시작 폴더로)
+    @Published var startWithGrid: Bool { didSet { save(startWithGrid ? "grid" : "last", "startLayout") } }
+    // 가로 배열(열 수)·세로 배열(줄 수) 1~3. 둘 다 3은 안 됨(최대 6칸)
+    @Published var startColumns: Int {
+        didSet {
+            if startColumns == 3 && startRows == 3 { startRows = 2 }
+            save(startColumns, "startColumns")
+        }
+    }
+    @Published var startRows: Int {
+        didSet {
+            if startColumns == 3 && startRows == 3 { startColumns = 2 }
+            save(startRows, "startRows")
+        }
+    }
 
     // MARK: 보기
 
@@ -56,7 +72,7 @@ final class AppSettings: ObservableObject {
 
     static var defaultStartFolders: [String] {
         let home = FileManager.default.homeDirectoryForCurrentUser
-        return ["Desktop", "Documents", "Downloads", ""].map {
+        return ["Desktop", "Documents", "Downloads", "", "", ""].map {
             $0.isEmpty ? home.path : home.appendingPathComponent($0).path
         }
     }
@@ -66,7 +82,15 @@ final class AppSettings: ObservableObject {
         func value<T>(_ key: String, _ fallback: T) -> T { s.object(forKey: Self.prefix + key) as? T ?? fallback }
 
         let folders = value("startFolders", Self.defaultStartFolders)
-        startFolders = folders.count == 4 ? folders : Self.defaultStartFolders
+        // 1.1.0까지는 4개 → 뒤에 기본값(홈 폴더) 2개를 붙여 6개로
+        let defaults = Self.defaultStartFolders
+        startFolders = folders.count <= defaults.count ? folders + defaults.dropFirst(folders.count) : defaults
+        startWithGrid = value("startLayout", "last") == "grid"
+        var cols = min(max(value("startColumns", 2), 1), 3)
+        let rows = min(max(value("startRows", 2), 1), 3)
+        if cols == 3 && rows == 3 { cols = 2 }
+        startColumns = cols
+        startRows = rows
         newViewMode = ViewMode(rawValue: value("newViewMode", ViewMode.list.rawValue)) ?? .list
         iconScale = min(max(value("iconScale", 1.0), 0.5), 3.0)
         gridSpacing = min(max(value("gridSpacing", 1.0), 0.5), 1.5)
@@ -91,6 +115,9 @@ final class AppSettings: ObservableObject {
             store.removeObject(forKey: key)
         }
         startFolders = Self.defaultStartFolders
+        startWithGrid = false
+        startColumns = 2
+        startRows = 2
         newViewMode = .list
         iconScale = 1.0
         gridSpacing = 1.0

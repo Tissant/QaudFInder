@@ -16,6 +16,7 @@ struct QaudFInderApp: App {
         WindowGroup {
             ContentView()
         }
+        .windowResizability(.contentMinSize)   // 창을 칸 배치의 최소 크기보다 작게 줄일 수 없게
         .commands {
             SidebarCommands()      // 보기 메뉴의 "사이드바 가리기/보기" (⌃⌘S)
             GoCommands()           // 이동 메뉴

@@ -5,7 +5,7 @@
 <h1 align="center">QaudFInder</h1>
 
 <p align="center">
-  A lightweight macOS file manager that shows <b>four folders in one window</b> (2×2).<br>
+  A lightweight macOS file manager that shows <b>several folders in one window</b> (up to 6 panes).<br>
   Native Swift · No dependencies · ~2 MB
 </p>
 
@@ -22,19 +22,21 @@
 ## Why QaudFInder?
 
 Finder shows one folder per window (or per tab). When you sort files between several folders, you end up juggling windows.
-QaudFInder splits one window into **four panes**, each with its own folder, so you can see and move files between them at a glance.
+QaudFInder splits one window into **several panes (up to 6)**, each with its own folder, so you can see and move files between them at a glance.
 
 > **About the name** — "QaudFInder" started as a typo of *QuadFinder*. It stayed on purpose, as a small mark that sets it apart from the many apps with the usual name.
 
 ## Features
 
 **Layout**
-- 2×2 panes with draggable dividers; each pane remembers its folder, view mode and sort order
-- **Merge** two adjacent panes that show the same folder (⌘-click the top bars of both panes, then press *Merge*)
+- **Free splitting**: ⌘-click the top bar of the active pane → **Split Left/Right** or **Split Top/Bottom** (up to 6 panes)
+- **Merge**: ⌘-click a pane next to the active pane → *Merge*. Any two panes that form a rectangle together, even with different folders, down to a single pane
+- Draggable dividers. The split layout, divider positions, and each pane's folder, view mode and sort order are remembered
+- **Startup layout**: last layout, or a grid of 1–3 columns × 1–3 rows (up to 6 panes) with a start folder per pane
 - Active pane highlight, move between panes with `Tab` / `⇧Tab`
 - Collapsible sidebar with favorites (add by drag & drop or right-click, reorder by dragging)
-- Multiple windows (`⌘N`) — new windows start at your chosen start folders
-- **Settings window** (`⌘,` or the gear button, top right): start folder per pane, view, file operations, sidebar, **custom keyboard shortcuts**, reset
+- Multiple windows (`⌘N`) — new windows start with your chosen grid and start folders
+- **Settings window** (`⌘,` or the gear button, top right): startup layout, start folder per pane, view, file operations, sidebar, **custom keyboard shortcuts**, reset
 
 **Browsing**
 - List view with sortable columns (Name / Date Modified / Size / Kind) and **expandable folders** (`›` disclosure, `→` / `←`)
@@ -43,7 +45,7 @@ QaudFInder splits one window into **four panes**, each with its own folder, so y
 - Quick Look with `Space`; keep it open and use the arrow keys to browse
 - Rubber-band selection, type-to-select, path bar
 - **Double-click the path** at the top of a pane (or press `⇧⌘G`) to type a path and go there
-- Status bar shows the **size of the current folder** (calculated in the background)
+- Status bar shows the **size of the current folder** (calculated in the background, active pane only)
 - Show hidden files per pane (`⇧⌘.`)
 - Auto-refresh when files change in the current folder
 
@@ -79,7 +81,7 @@ Most of these can be changed in **Settings → Shortcuts** (defaults shown).
 | `⇧⌘.` | Show / hide hidden files |
 | `⌃⌘S` | Show / hide sidebar |
 | `→` / `←` (list view) | Expand / collapse folder |
-| `⌘`-click top bar | Select panes to merge (`esc` to cancel) |
+| `⌘`-click top bar | Active pane: split buttons / adjacent pane: merge button (`esc` to cancel) |
 | `⌘`-click icon-view button | Icon size & grid spacing sliders |
 | `⌘,` | Settings |
 
@@ -118,6 +120,7 @@ The script builds, quits a running copy, moves the previous version to the Trash
 QaudFInder/
 ├── QaudFInderApp.swift      App entry, menus, quit confirmation during copies
 ├── Models/
+│   ├── PaneLayout.swift       Pane layout tree: split, merge, positions, Tab order
 │   ├── PaneModel.swift        One pane: navigation, selection, sorting, file operations, folder watching
 │   ├── CopyQueue.swift        Background copy queue with progress (copyfile)
 │   ├── SidebarModel.swift     Favorites (stored as bookmarks, cleans up missing folders)
@@ -126,13 +129,15 @@ QaudFInder/
 │   ├── ThumbnailCache.swift   File content previews (QuickLookThumbnailing)
 │   └── FileItem.swift
 └── Views/
-    ├── ContentView.swift      Window: sidebar + 2×2 panes + merging
+    ├── ContentView.swift      Window: sidebar + pane layout + split/merge
+    ├── PaneLayoutView.swift   Draws the panes and draggable dividers
     ├── PaneView.swift         One pane: top bar, path bar, status bar
     ├── FileTableView.swift    List view (NSOutlineView)
     ├── FileGridView.swift     Icon view (NSCollectionView)
     ├── ListSupport.swift      Shortcuts, context menu, drop rules, rename, Quick Look
     ├── PathField.swift        Path display / input field in the top bar
     ├── SettingsView.swift     Settings window (⌘,)
+    ├── StartLayoutPicker.swift Startup layout (grid + preview)
     ├── SidebarView.swift, IconSizePopover.swift, CopyProgressBar.swift
 Tools/
 ├── install.sh               Release build → /Applications

@@ -52,14 +52,15 @@ final class PaneModel: ObservableObject {
     // 첫 번째 창의 칸만 저장합니다. ⌘N으로 연 창은 nil → 기본 폴더로 시작하고 저장하지 않음.
     let store: UserDefaults?
 
-    init(index: Int, defaultURL: URL, remembers: Bool = true) {
+    // useSavedFolder: false면 지난번 폴더 대신 defaultURL로 시작 (설정 "이 배열로 시작"). 보기 방식·정렬은 그대로 기억
+    init(index: Int, defaultURL: URL, remembers: Bool = true, useSavedFolder: Bool = true) {
         self.index = index
         self.store = remembers ? UserDefaults.standard : nil
         let defaults = store
 
         // 지난번에 열어 둔 폴더가 있으면 그 폴더로 시작
         var start = defaultURL
-        if let saved = defaults?.string(forKey: "pane\(index).path") {
+        if useSavedFolder, let saved = defaults?.string(forKey: "pane\(index).path") {
             var isDir: ObjCBool = false
             if FileManager.default.fileExists(atPath: saved, isDirectory: &isDir), isDir.boolValue {
                 start = URL(fileURLWithPath: saved)
@@ -83,6 +84,23 @@ final class PaneModel: ObservableObject {
         settingsWatch = AppSettings.shared.$listRevision.dropFirst()
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.reload(keepError: true) }
+    }
+
+    // 칸을 합쳐서 없어진 칸, 새로 나눈 칸의 저장 값을 지움
+    // (예전에 같은 번호였던 칸의 폴더가 새 칸에 섞이지 않게)
+    static func forgetSaved(_ index: Int) {
+        for key in ["path", "viewMode", "sortKey", "sortAscending", "showHidden"] {
+            UserDefaults.standard.removeObject(forKey: "pane\(index).\(key)")
+        }
+    }
+
+    // 칸을 나눌 때: 새 칸이 나눈 칸과 같은 보기 방식·정렬·숨김 파일·아이콘 크기로 시작
+    func copyViewSettings(from other: PaneModel) {
+        viewMode = other.viewMode
+        setSort(other.sortKey, ascending: other.sortAscending)
+        if showHidden != other.showHidden { toggleHidden() }
+        iconScale = other.iconScale
+        gridSpacing = other.gridSpacing
     }
 
     // 사이드바 클릭, ⇧⌘G 창 닫기 뒤에 키보드 입력을 이 칸 목록으로 되돌릴 때
@@ -332,13 +350,34 @@ final class PaneModel: ObservableObject {
     // MARK: 폴더 용량 (하위 폴더까지 전부 더함)
     // 큰 폴더는 오래 걸리므로 화면 뒤(백그라운드)에서 계산하고, 폴더를 옮기면 이전 계산은 취소합니다.
 
+    // 1.2.0: 활성 칸(키보드로 다루는 칸)만 계산합니다. 칸이 많아도 앱을 켤 때 디스크·CPU 부담이 거의 없게.
+    // 다른 칸으로 옮기면 계산을 멈추고, 다 끝난 값은 그 폴더에 있는 동안 남겨 둡니다.
+    var isActivePane = false {
+        didSet {
+            guard isActivePane != oldValue else { return }
+            if isActivePane {
+                if sizedURL != currentURL || folderSizeText.isEmpty { computeFolderSize() }
+            } else {
+                sizeTask?.cancel()
+                sizeTask = nil
+                if sizedURL != currentURL { folderSizeText = "" }
+            }
+        }
+    }
+    private var sizedURL: URL? = nil      // folderSizeText가 다 계산된 폴더
+
     private func computeFolderSize() {
         sizeTask?.cancel()
         guard AppSettings.shared.folderSize else {        // 설정에서 끔: 계산하지 않음
             folderSizeText = ""
+            sizedURL = nil
             return
         }
-        folderSizeText = "계산 중…"
+        guard isActivePane else {                         // 활성 칸이 아니면 계산하지 않음
+            if sizedURL != currentURL { folderSizeText = "" }
+            return
+        }
+        if sizedURL != currentURL { folderSizeText = "계산 중…" }   // 같은 폴더 다시 계산 중엔 이전 값을 보여 줌
         let url = currentURL
         sizeTask = Task.detached(priority: .utility) { [weak self] in
             let total = PaneModel.totalSize(of: url)
@@ -350,7 +389,8 @@ final class PaneModel: ObservableObject {
         guard url == currentURL else { return }       // 그사이 다른 폴더로 옮겼으면 버림
         if let total {
             folderSizeText = ByteCountFormatter.string(fromByteCount: total, countStyle: .file)
-        } else if !Task.isCancelled {
+            sizedURL = url
+        } else if sizedURL != url {
             folderSizeText = ""
         }
     }
