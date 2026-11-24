@@ -11,7 +11,8 @@
 //  - 이름 바꾸기: Return을 누르면 이름 글자가 그 자리에서 편집 상태가 됨
 //  - 이름 입력으로 바로 찾기 (type-select)
 //  - 파일 내용 미리보기(썸네일) 아이콘
-//  - 아이콘 크기 조절 (칸별, PaneModel.iconScale: 0.5 ~ 2배)
+//  - 아이콘 크기 조절 (칸별, PaneModel.iconScale: 0.5 ~ 3배)
+//  - 격자 간격 조절 (칸별, PaneModel.gridSpacing: 0.5 ~ 1.5배)
 //
 
 import SwiftUI
@@ -20,6 +21,7 @@ import Quartz
 
 struct FileGridView: NSViewRepresentable {
     @ObservedObject var model: PaneModel
+    @ObservedObject var settings = AppSettings.shared     // 미리보기 켜기/끄기가 바뀌면 다시 그림
     var isActive: Bool
     var events: ListEvents
 
@@ -32,9 +34,7 @@ struct FileGridView: NSViewRepresentable {
         c.lastFocusRequest = model.focusRequest
 
         let layout = NSCollectionViewFlowLayout()
-        layout.itemSize = IconMetrics(scale: model.iconScale).itemSize
-        layout.minimumInteritemSpacing = 6
-        layout.minimumLineSpacing = 6
+        IconMetrics(scale: model.iconScale, spacing: model.gridSpacing).apply(to: layout)
         layout.sectionInset = NSEdgeInsets(top: 8, left: 8, bottom: 8, right: 8)
         grid.collectionViewLayout = layout
 
@@ -97,6 +97,9 @@ struct FileGridView: NSViewRepresentable {
         var lastFocusRequest = 0
         private var items: [FileItem] = []
         private var shownScale: Double = 1.0
+        private var shownSpacing: Double = 1.0
+        private var shownLarge = false            // 큰 미리보기(아이콘 크기 200% 초과)를 쓰는 중
+        private var shownThumbnails = AppSettings.shared.showThumbnails
 
         init(_ parent: FileGridView) {
             self.parent = parent
@@ -106,16 +109,28 @@ struct FileGridView: NSViewRepresentable {
         func apply(model: PaneModel) {
             guard let grid else { return }
             // 아이콘 크기가 바뀌면: 칸 크기를 바꾸고, 보이는 아이콘만 즉시 크기 조절 (선택·스크롤 유지)
-            if model.iconScale != shownScale {
+            // 격자 간격이 바뀌어도 칸 크기·간격만 바꿈
+            if model.iconScale != shownScale || model.gridSpacing != shownSpacing {
                 shownScale = model.iconScale
-                let metrics = IconMetrics(scale: shownScale)
+                shownSpacing = model.gridSpacing
+                let metrics = IconMetrics(scale: shownScale, spacing: shownSpacing)
                 if let layout = grid.collectionViewLayout as? NSCollectionViewFlowLayout {
-                    layout.itemSize = metrics.itemSize
+                    metrics.apply(to: layout)
                     layout.invalidateLayout()
                 }
-                for case let icon as IconItem in grid.visibleItems() {
-                    icon.setIconSize(metrics.iconSize)
+                let wasLarge = shownLarge
+                shownLarge = shownScale > 2.0
+                if wasLarge != shownLarge {
+                    grid.reloadData()               // 200%를 넘나들면 미리보기를 알맞은 크기로 다시 받음
+                } else {
+                    for case let icon as IconItem in grid.visibleItems() {
+                        icon.setIconSize(metrics.iconSize)
+                    }
                 }
+            }
+            if shownThumbnails != AppSettings.shared.showThumbnails {
+                shownThumbnails = AppSettings.shared.showThumbnails
+                grid.reloadData()
             }
             if items != model.items {
                 let folderChanged = items.first?.url.deletingLastPathComponent() != model.items.first?.url.deletingLastPathComponent()
@@ -194,7 +209,8 @@ struct FileGridView: NSViewRepresentable {
                             itemForRepresentedObjectAt indexPath: IndexPath) -> NSCollectionViewItem {
             let item = collectionView.makeItem(withIdentifier: IconItem.id, for: indexPath)
             if let icon = item as? IconItem, indexPath.item < items.count {
-                icon.configure(items[indexPath.item], iconSize: IconMetrics(scale: shownScale).iconSize)
+                icon.configure(items[indexPath.item], iconSize: IconMetrics(scale: shownScale, spacing: shownSpacing).iconSize,
+                               largeThumbnail: shownLarge)
             }
             return item
         }
@@ -258,16 +274,31 @@ struct FileGridView: NSViewRepresentable {
     }
 }
 
-// MARK: - 아이콘 크기 계산 (배율 1 = 지금까지의 크기: 아이콘 48pt, 칸 88×94)
+// MARK: - 아이콘 크기·격자 간격 계산
+// 배율 1·간격 1 = 1.0까지의 모습: 아이콘 48pt, 칸 88×94, 칸 사이 6pt
+// 격자 간격(spacing)은 "눈에 보이는 간격" 전체를 바꿉니다:
+//   아이콘 양옆의 이름 여백(40pt) + 칸 사이(6pt), 줄 사이(6pt)
+//   좁게(0.5)는 이름이 들어갈 폭도 좁아져 긴 이름이 더 잘림 (Finder와 같음)
 
 struct IconMetrics {
     let iconSize: CGFloat
     let itemSize: NSSize
+    let interitemSpacing: CGFloat
+    let lineSpacing: CGFloat
 
-    init(scale: Double) {
+    init(scale: Double, spacing: Double = 1.0) {
         iconSize = (48 * scale).rounded()
-        let width = max(80, iconSize + 40)                 // 이름 두 줄이 들어갈 너비는 확보
-        itemSize = NSSize(width: width, height: iconSize + 8 + 2 + 36)
+        let margin = (40 * spacing).rounded()
+        let width = max(80 * spacing, iconSize + margin)   // 이름 두 줄이 들어갈 너비
+        itemSize = NSSize(width: width.rounded(), height: iconSize + 8 + 2 + 36)
+        interitemSpacing = (6 * spacing).rounded()
+        lineSpacing = max(0, (6 + 16 * (spacing - 1)).rounded())   // 0.5 → 0, 1 → 6, 1.5 → 14
+    }
+
+    func apply(to layout: NSCollectionViewFlowLayout) {
+        layout.itemSize = itemSize
+        layout.minimumInteritemSpacing = interitemSpacing
+        layout.minimumLineSpacing = lineSpacing
     }
 }
 
@@ -337,11 +368,12 @@ final class IconItem: NSCollectionViewItem {
         backgroundSizeConstraints.forEach { $0.constant = size + 8 }
     }
 
-    func configure(_ item: FileItem, iconSize: CGFloat) {
+    func configure(_ item: FileItem, iconSize: CGFloat, largeThumbnail: Bool = false) {
         setIconSize(iconSize)
         shownURL = item.url
         // 먼저 기본 아이콘, 내용 미리보기가 준비되면 바꿔 끼움
-        if let thumb = ThumbnailCache.shared.thumbnail(for: item, done: { [weak self] image in
+        if AppSettings.shared.showThumbnails,             // 설정에서 끄면 기본 아이콘만
+           let thumb = ThumbnailCache.shared.thumbnail(for: item, large: largeThumbnail, done: { [weak self] image in
             guard let self, self.shownURL == item.url else { return }
             self.icon.image = image
         }) {
@@ -465,7 +497,23 @@ final class FileCollection: NSCollectionView {
 
     override func menu(for event: NSEvent) -> NSMenu? {
         lastMenuPoint = convert(event.locationInWindow, from: nil)
-        return super.menu(for: event)
+        let menu = super.menu(for: event)
+        commands.rebuildMenu()
+        return menu
+    }
+
+    // 서비스: 선택한 파일이 있으면 "파일을 넘겨줄 수 있음"이라고 알림 (ListSupport.swift의 ServiceSupport)
+    override func validRequestor(forSendType sendType: NSPasteboard.PasteboardType?,
+                                 returnType: NSPasteboard.PasteboardType?) -> Any? {
+        if returnType == nil, let sendType, ServiceSupport.sendTypes.contains(sendType),
+           !(commands.host?.selectedURLs.isEmpty ?? true) {
+            return self
+        }
+        return super.validRequestor(forSendType: sendType, returnType: returnType)
+    }
+
+    @objc func writeSelection(to pboard: NSPasteboard, types: [NSPasteboard.PasteboardType]) -> Bool {
+        ServiceSupport.write(commands.host?.selectedURLs ?? [], to: pboard)
     }
 
     // 메뉴 막대의 편집 > 복사·붙여넣기(⌘C/⌘V)가 이쪽으로 올 때

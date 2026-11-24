@@ -33,14 +33,16 @@ QaudFInder splits one window into **four panes**, each with its own folder, so y
 - **Merge** two adjacent panes that show the same folder (⌘-click the top bars of both panes, then press *Merge*)
 - Active pane highlight, move between panes with `Tab` / `⇧Tab`
 - Collapsible sidebar with favorites (add by drag & drop or right-click, reorder by dragging)
-- Multiple windows (`⌘N`) — new windows start at the default folders
+- Multiple windows (`⌘N`) — new windows start at your chosen start folders
+- **Settings window** (`⌘,` or the gear button, top right): start folder per pane, view, file operations, sidebar, **custom keyboard shortcuts**, reset
 
 **Browsing**
 - List view with sortable columns (Name / Date Modified / Size / Kind) and **expandable folders** (`›` disclosure, `→` / `←`)
-- Icon view with **adjustable icon size** — ⌘-click the icon-view button to open the size slider (Small 50% · Normal · Big 150% · Huge 200%, per pane)
+- Icon view: ⌘-click the icon-view button for **icon size** (50–300%) and **grid spacing** (50–150%) sliders (per pane)
 - **File content previews** (thumbnails) for images, PDFs, videos, documents
 - Quick Look with `Space`; keep it open and use the arrow keys to browse
-- Rubber-band selection, type-to-select, path bar, `⇧⌘G` Go to Folder
+- Rubber-band selection, type-to-select, path bar
+- **Double-click the path** at the top of a pane (or press `⇧⌘G`) to type a path and go there
 - Status bar shows the **size of the current folder** (calculated in the background)
 - Show hidden files per pane (`⇧⌘.`)
 - Auto-refresh when files change in the current folder
@@ -50,7 +52,8 @@ QaudFInder splits one window into **four panes**, each with its own folder, so y
 - Drop a folder with `⌥` held → the target pane **opens that folder** instead of copying
 - Copy / paste / move (`⌘C`, `⌘V`, `⌥⌘V`), rename (`Return`), new folder (`⇧⌘N`), copy path (`⌥⌘C`)
 - Background copying with a progress bar, queue and cancel
-- Context menu: Open, Quick Look, Rename, Copy, Move to Trash, Copy Path, Show in Finder, Add to Sidebar
+- Context menu: Open, **Open With**, Quick Look, Rename, Copy, Move to Trash, Copy Path, Show in Finder, Add to Sidebar, **Services** (actions from other apps and Shortcuts)
+- Favorites follow renamed or moved folders; folders moved to the Trash are removed automatically (folders on a disconnected external drive stay, dimmed)
 
 ### Safety first
 QaudFInder **never deletes files permanently.** Everything that removes a file goes to the Trash:
@@ -59,11 +62,13 @@ Dragging files *out* to Finder or other apps is always a copy.
 
 ## Keyboard shortcuts
 
+Most of these can be changed in **Settings → Shortcuts** (defaults shown).
+
 | Shortcut | Action |
 |---|---|
 | Double-click / `⌘↓` / `⌘O` | Open (enter folder) |
 | `⌘↑` | Enclosing folder |
-| `⇧⌘G` | Go to Folder |
+| `⇧⌘G` / double-click the path | Go to Folder (type a path) |
 | `Tab` / `⇧Tab` | Next / previous pane |
 | `Space` | Quick Look |
 | `Return` | Rename |
@@ -75,7 +80,8 @@ Dragging files *out* to Finder or other apps is always a copy.
 | `⌃⌘S` | Show / hide sidebar |
 | `→` / `←` (list view) | Expand / collapse folder |
 | `⌘`-click top bar | Select panes to merge (`esc` to cancel) |
-| `⌘`-click icon-view button | Icon size slider |
+| `⌘`-click icon-view button | Icon size & grid spacing sliders |
+| `⌘,` | Settings |
 
 ## Installation
 
@@ -114,7 +120,9 @@ QaudFInder/
 ├── Models/
 │   ├── PaneModel.swift        One pane: navigation, selection, sorting, file operations, folder watching
 │   ├── CopyQueue.swift        Background copy queue with progress (copyfile)
-│   ├── SidebarModel.swift     Favorites
+│   ├── SidebarModel.swift     Favorites (stored as bookmarks, cleans up missing folders)
+│   ├── AppSettings.swift      Values from the Settings window
+│   ├── Shortcuts.swift        Customizable keyboard shortcuts
 │   ├── ThumbnailCache.swift   File content previews (QuickLookThumbnailing)
 │   └── FileItem.swift
 └── Views/
@@ -123,7 +131,9 @@ QaudFInder/
     ├── FileTableView.swift    List view (NSOutlineView)
     ├── FileGridView.swift     Icon view (NSCollectionView)
     ├── ListSupport.swift      Shortcuts, context menu, drop rules, rename, Quick Look
-    ├── SidebarView.swift, GoToFolderView.swift, IconSizePopover.swift, CopyProgressBar.swift
+    ├── PathField.swift        Path display / input field in the top bar
+    ├── SettingsView.swift     Settings window (⌘,)
+    ├── SidebarView.swift, IconSizePopover.swift, CopyProgressBar.swift
 Tools/
 ├── install.sh               Release build → /Applications
 └── make-icon.swift          Draws the app icon in code
@@ -133,7 +143,7 @@ Built with **Swift, SwiftUI and AppKit** only — no third-party packages.
 
 ## Development log
 
-How this app was planned and built, version by version (v1 → v7), including the problems we hit and how they were solved:
+How this app was planned and built, version by version (v1 → v7 → 1.1.0), including the problems we hit and how they were solved:
 **[docs/DEVLOG.md](docs/DEVLOG.md)** (English) · [docs/DEVLOG.ko.md](docs/DEVLOG.ko.md) (한국어)
 
 QaudFInder was designed and tested by [Tissant](https://github.com/Tissant) and implemented with [Claude Code](https://claude.com/claude-code).

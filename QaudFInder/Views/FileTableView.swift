@@ -34,6 +34,7 @@ final class FileNode {
 
 struct FileTableView: NSViewRepresentable {
     @ObservedObject var model: PaneModel
+    @ObservedObject var settings = AppSettings.shared     // 미리보기 켜기/끄기가 바뀌면 다시 그림
     var isActive: Bool               // 활성 칸이면 키보드 입력을 받음
     var events: ListEvents
 
@@ -151,6 +152,8 @@ struct FileTableView: NSViewRepresentable {
         }
 
         // 모델의 목록·선택을 표에 반영
+        private var shownThumbnails = AppSettings.shared.showThumbnails
+
         func apply(model: PaneModel) {
             guard let table else { return }
             isSyncing = true
@@ -168,6 +171,14 @@ struct FileTableView: NSViewRepresentable {
                 shownReloadCount = model.reloadCount
                 rebuild(model: model, force: folderChanged)
                 if folderChanged { table.scrollRowToVisible(0) }
+            }
+
+            // 설정에서 미리보기를 켜거나 끄면 보이는 줄의 아이콘만 다시 그림 (펼친 상태 유지)
+            if shownThumbnails != AppSettings.shared.showThumbnails {
+                shownThumbnails = AppSettings.shared.showThumbnails
+                let visible = table.rows(in: table.visibleRect)
+                table.reloadData(forRowIndexes: IndexSet(integersIn: visible.location..<(visible.location + visible.length)),
+                                 columnIndexes: IndexSet(integersIn: 0..<table.numberOfColumns))
             }
 
             let wanted = IndexSet((0..<table.numberOfRows).filter { row in
@@ -423,7 +434,8 @@ final class FileCell: NSTableCellView {
     // 먼저 기본 아이콘을 보여 주고, 내용 미리보기가 준비되면 바꿔 끼움
     func showIcon(for file: FileItem) {
         iconURL = file.url
-        if let thumb = ThumbnailCache.shared.thumbnail(for: file, done: { [weak self] image in
+        if AppSettings.shared.showThumbnails,             // 설정에서 끄면 기본 아이콘만
+           let thumb = ThumbnailCache.shared.thumbnail(for: file, done: { [weak self] image in
             guard let self, self.iconURL == file.url else { return }
             self.imageView?.image = image
         }) {
@@ -482,6 +494,27 @@ final class FileTable: NSOutlineView {
     // 메뉴 막대의 편집 > 복사·붙여넣기(⌘C/⌘V)가 이쪽으로 올 때
     @objc func copy(_ sender: Any?) { onKey?(.copy) }
     @objc func paste(_ sender: Any?) { onKey?(.paste(move: false)) }
+
+    // 우클릭: 표가 우클릭한 줄(clickedRow)을 정한 뒤 메뉴 내용을 만듦
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let menu = super.menu(for: event)
+        commands.rebuildMenu()
+        return menu
+    }
+
+    // 서비스: 선택한 파일이 있으면 "파일을 넘겨줄 수 있음"이라고 알림 (ListSupport.swift의 ServiceSupport)
+    override func validRequestor(forSendType sendType: NSPasteboard.PasteboardType?,
+                                 returnType: NSPasteboard.PasteboardType?) -> Any? {
+        if returnType == nil, let sendType, ServiceSupport.sendTypes.contains(sendType),
+           !(commands.host?.selectedURLs.isEmpty ?? true) {
+            return self
+        }
+        return super.validRequestor(forSendType: sendType, returnType: returnType)
+    }
+
+    @objc func writeSelection(to pboard: NSPasteboard, types: [NSPasteboard.PasteboardType]) -> Bool {
+        ServiceSupport.write(commands.host?.selectedURLs ?? [], to: pboard)
+    }
 
     // 훑어보기 창이 이 표에게 "내용을 대 줄래?"라고 물을 때
     override func acceptsPreviewPanelControl(_ panel: QLPreviewPanel!) -> Bool { true }

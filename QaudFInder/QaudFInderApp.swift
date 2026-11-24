@@ -18,13 +18,64 @@ struct QaudFInderApp: App {
         }
         .commands {
             SidebarCommands()      // 보기 메뉴의 "사이드바 가리기/보기" (⌃⌘S)
+            GoCommands()           // 이동 메뉴
         }
+
+        // 설정 창: 앱 메뉴 "설정…"(⌘,)이 자동으로 생김
+        Settings {
+            SettingsView()
+        }
+    }
+}
+
+// MARK: - 이동 메뉴 (Finder의 "이동" 메뉴와 같은 자리)
+
+struct GoCommands: Commands {
+    @FocusedValue(\.goToFolder) private var goToFolder
+    @ObservedObject private var shortcuts = ShortcutStore.shared   // 설정에서 바꾼 단축키를 바로 반영
+
+    var body: some Commands {
+        CommandMenu("이동") {
+            Button("폴더로 이동…") { goToFolder?.run() }
+                .keyboardShortcut(shortcuts.primary(for: .goToFolder).flatMap(\.swiftUIShortcut))
+                .disabled(goToFolder == nil)
+        }
+    }
+}
+
+extension KeyCombo {
+    // SwiftUI 메뉴용 단축키로 바꾸기 (기능키 등 메뉴에 못 넣는 키는 nil)
+    var swiftUIShortcut: KeyboardShortcut? {
+        let key: KeyEquivalent
+        switch keyCode {
+        case 36: key = .return
+        case 49: key = .space
+        case 51: key = .delete
+        case 117: key = .deleteForward
+        case 123: key = .leftArrow
+        case 124: key = .rightArrow
+        case 125: key = .downArrow
+        case 126: key = .upArrow
+        default:
+            guard !isSpecialKey, let c = menuKey.first else { return nil }
+            key = KeyEquivalent(c)
+        }
+        var mods: EventModifiers = []
+        if flags.contains(.command) { mods.insert(.command) }
+        if flags.contains(.shift) { mods.insert(.shift) }
+        if flags.contains(.option) { mods.insert(.option) }
+        if flags.contains(.control) { mods.insert(.control) }
+        return KeyboardShortcut(key, modifiers: mods)
     }
 }
 
 // MARK: - 앱 종료 직전 확인: 복사·이동이 진행 중이면 물어봄
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        ServiceSupport.register()          // 우클릭 메뉴에 "서비스" 붙이기
+    }
+
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard CopyQueue.shared.isBusy else { return .terminateNow }
 

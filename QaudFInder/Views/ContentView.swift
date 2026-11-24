@@ -49,7 +49,12 @@ final class WindowPanes: ObservableObject {
         let first = !Self.rememberingWindowOpen
         if first { Self.rememberingWindowOpen = true }
         remembers = first
-        let folders = [homeFolder("Desktop"), homeFolder("Documents"), homeFolder("Downloads"), homeFolder("")]
+        // 시작 폴더: 설정 창 "칸별 시작 폴더" (없어진 폴더면 원래 기본 폴더)
+        let fallback = [homeFolder("Desktop"), homeFolder("Documents"), homeFolder("Downloads"), homeFolder("")]
+        let folders = fallback.indices.map { i -> URL in
+            let path = AppSettings.shared.startFolders[i]
+            return SidebarModel.isFolder(URL(fileURLWithPath: path)) ? URL(fileURLWithPath: path) : fallback[i]
+        }
         panes = folders.enumerated().map { i, url in
             PaneModel(index: i, defaultURL: url, remembers: first)
         }
@@ -69,7 +74,6 @@ struct ContentView: View {
     @State private var paneFrames: [Int: CGRect] = [:]    // 각 칸의 화면 위치 ("병합하기" 버튼 위치 계산용)
     @State private var hint: String? = nil                // 아래쪽 안내 문구
     @State private var activePane = 0                     // 키보드로 다루는 칸 (Tab으로 이동)
-    @State private var showGoTo = false                   // ⇧⌘G 폴더로 이동 창
     // 사이드바 접힘 상태 (앱을 다시 켜도 기억)
     @State private var sidebarVisibility: NavigationSplitViewVisibility =
         UserDefaults.standard.bool(forKey: "sidebar.collapsed") ? .detailOnly : .all
@@ -85,12 +89,12 @@ struct ContentView: View {
         } detail: {
             paneArea
                 .toolbar {
+                    // 오른쪽 위 설정 버튼 (앱 메뉴 "설정…" ⌘, 와 같음)
                     ToolbarItem {
-                        Button { showGoTo = true } label: {
-                            Image(systemName: "arrow.forward.folder")
+                        SettingsLink {
+                            Image(systemName: "gearshape")
                         }
-                        .help("폴더로 이동 (⇧⌘G)")
-                        .keyboardShortcut("g", modifiers: [.command, .shift])
+                        .help("설정 (⌘,)")
                     }
                 }
         }
@@ -100,35 +104,12 @@ struct ContentView: View {
             }
         }
         .onDisappear { window.windowClosed() }     // 창을 닫을 때
-        .sheet(isPresented: $showGoTo, onDismiss: { model(activePane).requestFocus() }) {
-            GoToFolderView(startPath: model(activePane).currentURL.path) { text in
-                goTo(text)
-            }
+        // 메뉴 막대 "이동 > 폴더로 이동…"(⇧⌘G)이 이 창의 활성 칸 경로 입력칸을 열도록
+        .focusedSceneValue(\.goToFolder, GoToFolderAction { model(activePane).requestPathEdit() })
+        // 즐겨찾기를 정리했으면 아래쪽에 잠깐 안내
+        .onReceive(SidebarModel.shared.$notice.compactMap { $0 }) { text in
+            showHint(text)
         }
-    }
-
-    // MARK: ⇧⌘G 경로로 이동. 실패하면 안내 문구를 돌려줌
-
-    private func goTo(_ text: String) -> String? {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return "경로를 입력하세요." }
-        let pane = model(activePane)
-        var path = (trimmed as NSString).expandingTildeInPath
-        if !path.hasPrefix("/") {
-            path = pane.currentURL.appendingPathComponent(path).path   // 지금 폴더 기준
-        }
-        let url = URL(fileURLWithPath: path).standardizedFileURL
-        guard FileManager.default.fileExists(atPath: url.path) else {
-            return "그런 폴더나 파일이 없습니다: \(url.path)"
-        }
-        if SidebarModel.isFolder(url) {
-            pane.open(url)
-        } else {
-            // 파일이면 그 파일이 있는 폴더로 가서 선택
-            pane.open(url.deletingLastPathComponent())
-            pane.setSelection([url], anchor: url)
-        }
-        return nil
     }
 
     // MARK: 칸 4개 + 병합 버튼 + 안내 문구
@@ -326,7 +307,7 @@ struct ContentView: View {
         merges = merges.filter { $0.a != i }
     }
 
-    private func showHint(_ text: String) {
+    func showHint(_ text: String) {
         hint = text
         Task { @MainActor in
             try? await Task.sleep(for: .seconds(2))
@@ -337,4 +318,14 @@ struct ContentView: View {
 
 #Preview {
     ContentView()
+}
+
+// MARK: - 메뉴 막대 "이동 > 폴더로 이동…" (⇧⌘G) 연결
+
+struct GoToFolderAction {
+    let run: () -> Void
+}
+
+extension FocusedValues {
+    @Entry var goToFolder: GoToFolderAction? = nil
 }

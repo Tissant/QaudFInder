@@ -34,7 +34,7 @@
 ```
 [claude.ai chat]  v1 – v2  ──▶  hand-off document
                                    │
-[Claude Code]     setup → v3 → v4 → v5 → v6 → icon · windows · installer → v7 → GitHub
+[Claude Code]     setup → v3 → v4 → v5 → v6 → icon · windows · installer → v7 → GitHub → 1.1.0
 ```
 
 | Step | Contents |
@@ -46,6 +46,7 @@
 | v6 | Background copying, auto-refresh, hidden files |
 | Wrap-up | App icon, new windows open at default folders, install script |
 | v7 | File previews, expandable folders in list view, icon size slider |
+| 1.1.0 | Open With & Services, path input, favorites cleanup, grid spacing, Settings window & custom shortcuts |
 
 ---
 
@@ -141,6 +142,24 @@ Three requests after a few days of real use.
 - **Decisions:** icon size is per pane; the `›` sits left of the icon, like Finder.
 - **Fix:** Quick Look closed when moving with arrow keys in icon view (see #9 below).
 
+### 1.1.0. Convenience features + Settings window
+
+The first version after the public release (Release v1.0). From here on, version numbers follow `major.minor.patch`, so the version after v7 is **1.1.0** (new features bump the middle number). It was built in two stages with a test in between.
+
+| Stage | Feature | Details |
+|---|---|---|
+| 1 | Open With | Context submenu: the default app "(default)" on top, other apps, then "Other…". With several files, only apps that can open all of them |
+| 1 | Services | The list and icon views tell macOS they can hand over the selected files (`validRequestor`, `writeSelection`), so other apps' services appear in the context menu like in Finder |
+| 1 | Path input | The *Go to Folder* toolbar button and sheet are gone; double-click the path at the top of a pane (or `⇧⌘G`, Go menu) to edit it in place |
+| 1 | Favorites cleanup | Stored as bookmarks instead of path strings, so renamed folders are followed. Folders in the Trash or gone from a connected disk are removed; folders on a disconnected drive (`/Volumes/…`) stay, dimmed. The old list is migrated on first launch |
+| 1 | Grid spacing | 50–150% slider under the icon size slider; scales the visible spacing (name margin, gap between items, gap between rows) |
+| 1 | Icon size | Extended to 50–300% with six evenly spaced ticks. Above 200% previews are regenerated at a larger size; the preview cache is capped at about 200 MB |
+| 2 | Settings window | `⌘,` or the gear button. Tabs: General (start folder per pane) / View / File operations (confirm Trash, folder size, default drag action) / Sidebar / Shortcuts / Advanced (reset). Defaults match 1.0 behavior |
+| 2 | Custom shortcuts | Ten actions can be rebound. Plain letter keys, keys used by macOS and keys already in use are rejected. Fixed shortcuts and mouse gestures are listed in the same tab |
+
+- **Changes after testing:** the slider popover covered too much of the window, so it shrank to 60% width and about half the height → text 10% larger → evenly spaced ticks instead of labels for icon size → path editing on double-click instead of a single click.
+- **Moved to the next version:** "Layout at launch (columns × rows, up to 6 panes)" goes into 1.2.0 (free splitting), which rebuilds the pane structure.
+
 ---
 
 ## 4. Problems and solutions
@@ -156,6 +175,8 @@ Three requests after a few days of real use.
 | 7 | A dent where each folder's tab meets its body | Rounded corners of the tab and body overlapped | Draw the tab overlapping deeper into the body |
 | 8 | Saved state mixed up across windows | State was keyed only by pane number (0–3) | Only the first window saves (`WindowPanes`); others start fresh |
 | 9 | Quick Look closed on arrow keys in icon view | The collection view reports "deselect → select" in two steps, so the selection looks empty for a moment | Defer the Quick Look refresh by one run-loop turn and use the final selection |
+| 10 | Shortcuts recorded with a Korean input source showed as "⌥⌘ㅅ" | The typed character depends on the input source | Derive the English letter from the key position (as Finder menus do) |
+| 11 | Services appear directly in the context menu instead of under "Services ▸" | macOS inlines services when there are only a few | Expected behavior; unwanted items can be turned off in System Settings → Keyboard → Keyboard Shortcuts → Services |
 
 ---
 
@@ -170,14 +191,17 @@ Three requests after a few days of real use.
 | Wrap-up | New windows start at default folders / keep the name `QaudFInder` / icon first, then installer |
 | v7 | Icon size per pane, `›` left of the icon |
 | Release | MIT license, English & Korean docs, public repository |
+| 1.1.0 planning | Free splitting (split any pane, remove the unmerge button), bring back Get Info and archive/extract, `major.minor.patch` version numbers |
+| 1.1.0 | Path editing on double-click, Shortcuts tab in Settings, at most 6 panes (9 is too small on a laptop screen) |
 
-**Intentionally left out:** permanent delete, archive/extract, batch rename, tags, tabs, recursive search (`⌘F`), Get Info (`⌘I`), NAS connections.
+**Intentionally left out:** permanent delete, batch rename, tags, tabs, recursive search (`⌘F`), NAS connections.
+(Archive/extract and Get Info (`⌘I`) were brought back during 1.1.0 planning → planned for 1.3.0 and 1.4.0.)
 
 ---
 
 ## 6. Possible next steps
 
-- Remember merged panes across launches (currently reset on relaunch)
+- Remember merged panes across launches (currently reset on relaunch) → to be solved by "remember layout" in 1.2.0
 - Undo (`⌘Z`) — for now, *Put Back* from the Trash
 - Auto-refresh for expanded subfolders changed by other apps (use ⟳ for now)
 

@@ -110,10 +110,8 @@ struct PaneView: View {
             Button { model.goUp() } label: { Image(systemName: "arrow.up") }
                 .help("상위 폴더")
 
-            Text(model.currentURL.path)
-                .font(.system(size: 13, weight: .semibold))
-                .lineLimit(1)
-                .truncationMode(.head)
+            // 경로 글자: 클릭하면 입력칸으로 (⇧⌘G도 같음)
+            PathField(model: model, onCmdClick: onCmdClick, onPlainClick: onPlainClick)
 
             Spacer(minLength: 0)
 
@@ -121,9 +119,9 @@ struct PaneView: View {
             // 보기 방식 전환 [아이콘|리스트] — ⌘ 누른 채 아이콘 버튼을 누르면 아이콘 크기 슬라이더
             HStack(spacing: 2) {
                 viewModeButton(.icon, symbol: "square.grid.2x2",
-                               help: "아이콘 보기 (⌘ 누른 채 클릭: 아이콘 크기 조절)")
+                               help: "아이콘 보기 (⌘ 누른 채 클릭: 아이콘 크기·격자 간격 조절)")
                     .popover(isPresented: $showIconSize, arrowEdge: .bottom) {
-                        IconSizePopover(scale: $model.iconScale) { showIconSize = false }
+                        IconSizePopover(scale: $model.iconScale, spacing: $model.gridSpacing) { showIconSize = false }
                     }
                 viewModeButton(.list, symbol: "list.bullet", help: "리스트 보기")
             }

@@ -9,6 +9,7 @@
 
 import AppKit
 import Quartz
+import UniformTypeIdentifiers
 
 // MARK: - 목록에서 일어난 일을 바깥(PaneView/ContentView)으로 알리는 통로
 
@@ -36,27 +37,29 @@ enum ListKey {
     case tab(backward: Bool)     // Tab / ⇧Tab
     case escape
 
+    // 1.1.0: 바꿀 수 있는 단축키는 설정 창 "단축키" 탭의 값(ShortcutStore)을 따름
     init?(_ event: NSEvent) {
         let flags = event.modifierFlags.intersection([.command, .shift, .option, .control])
-        let cmd: NSEvent.ModifierFlags = .command
-        let optCmd: NSEvent.ModifierFlags = [.command, .option]
-        let shiftCmd: NSEvent.ModifierFlags = [.command, .shift]
+        // 고정 단축키 (macOS 편집 메뉴·칸 이동과 같음)
         switch (event.keyCode, flags) {
-        case (49, []):            self = .preview
-        case (36, []), (76, []):  self = .rename
-        case (125, cmd), (31, cmd): self = .open        // ↓, O
-        case (126, cmd):          self = .goUp          // ↑
-        case (51, cmd):           self = .trash         // ⌫
-        case (45, shiftCmd):      self = .newFolder     // N
-        case (8, cmd):            self = .copy          // C
-        case (8, optCmd):         self = .copyPath
-        case (47, shiftCmd):      self = .toggleHidden  // .
-        case (9, cmd):            self = .paste(move: false)   // V
-        case (9, optCmd):         self = .paste(move: true)
-        case (48, []):            self = .tab(backward: false)
-        case (48, [.shift]):      self = .tab(backward: true)
-        case (53, _):             self = .escape
-        default: return nil
+        case (8, .command):       self = .copy; return                 // ⌘C
+        case (9, .command):       self = .paste(move: false); return   // ⌘V
+        case (48, []):            self = .tab(backward: false); return
+        case (48, [.shift]):      self = .tab(backward: true); return
+        case (53, _):             self = .escape; return
+        default: break
+        }
+        switch ShortcutStore.shared.action(for: event) {
+        case .open:         self = .open
+        case .preview:      self = .preview
+        case .rename:       self = .rename
+        case .goUp:         self = .goUp
+        case .trash:        self = .trash
+        case .newFolder:    self = .newFolder
+        case .pasteMove:    self = .paste(move: true)
+        case .copyPath:     self = .copyPath
+        case .toggleHidden: self = .toggleHidden
+        case .goToFolder, nil: return nil        // 폴더로 이동은 메뉴 막대(이동 메뉴)가 처리
         }
     }
 
@@ -96,7 +99,8 @@ enum PaneDrop {
         guard !urls.isEmpty else { return nil }
         if NSEvent.modifierFlags.contains(.option), urls.count == 1, SidebarModel.isFolder(urls[0]) {
             self = .navigate(urls[0])
-        } else if dropWantsMove(info) {
+        } else if dropWantsMove(info) != (AppSettings.shared.dragDefaultMove && info.draggingSource != nil) {
+            // 설정 "끌어 놓기 기본 동작 = 이동"이면 앱 안에서 끌 때만 반대로 (Finder에서 온 파일은 항상 복사)
             self = .move(urls)
         } else {
             self = .copy(urls)
@@ -230,7 +234,7 @@ protocol FileListHost: AnyObject {
 // MARK: - 단축키·우클릭 메뉴가 실제로 하는 일 (표·아이콘 보기 공통)
 
 @MainActor
-final class FileCommands: NSObject, NSMenuDelegate {
+final class FileCommands: NSObject {
     weak var model: PaneModel? {
         didSet { preview.model = model }
     }
@@ -241,7 +245,6 @@ final class FileCommands: NSObject, NSMenuDelegate {
 
     override init() {
         super.init()
-        menu.delegate = self
         menu.autoenablesItems = false
     }
 
@@ -252,7 +255,7 @@ final class FileCommands: NSObject, NSMenuDelegate {
         case .open:              model.activate(host.selectedURLs)
         case .rename:            renameSelection()
         case .goUp:              model.goUp()
-        case .trash:             model.moveToTrash(host.selectedURLs)
+        case .trash:             trashSelection(host.selectedURLs, model: model)
         case .newFolder:         newFolder()
         case .copy:              model.copyToPasteboard(host.selectedURLs)
         case .paste(let move):   model.pasteFromPasteboard(move: move)
@@ -261,6 +264,22 @@ final class FileCommands: NSObject, NSMenuDelegate {
         case .tab(let backward): events?.tab(backward)
         case .escape:            events?.escape()
         }
+    }
+
+    // 설정 "휴지통으로 보내기 전 확인"이 켜져 있으면 먼저 물어봄
+    private func trashSelection(_ urls: [URL], model: PaneModel) {
+        guard !urls.isEmpty else { return }
+        if AppSettings.shared.confirmTrash {
+            let alert = NSAlert()
+            alert.messageText = urls.count == 1
+                ? "'\(urls[0].lastPathComponent)'을(를) 휴지통으로 이동하겠습니까?"
+                : "\(urls.count)개 항목을 휴지통으로 이동하겠습니까?"
+            alert.informativeText = "휴지통에서 되돌려 놓을 수 있습니다."
+            alert.addButton(withTitle: "휴지통으로 이동")
+            alert.addButton(withTitle: "취소")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+        }
+        model.moveToTrash(urls)
     }
 
     private func renameSelection() {
@@ -275,20 +294,23 @@ final class FileCommands: NSObject, NSMenuDelegate {
     }
 
     // MARK: 우클릭 메뉴
+    // 표·아이콘 보기의 menu(for:)에서 메뉴를 보여 주기 직전에 부릅니다.
+    // (그 뒤에 macOS가 "서비스" 항목을 자동으로 덧붙입니다 → ServiceSupport)
 
-    func menuNeedsUpdate(_ menu: NSMenu) {
+    func rebuildMenu() {
         menu.removeAllItems()
         guard let host else { return }
         if host.prepareContextMenu() {
             let single = host.selectedURLs.count == 1
-            add("열기", #selector(menuOpen), key: "o")
-            add("훑어보기", #selector(menuPreview), enabled: single, key: " ", flags: [])
+            add("열기", #selector(menuOpen), action: .open)
+            addOpenWith(host.selectedURLs)
+            add("훑어보기", #selector(menuPreview), enabled: single, action: .preview)
             menu.addItem(.separator())
-            add("이름 바꾸기", #selector(menuRename), enabled: single, key: "\r", flags: [])
+            add("이름 바꾸기", #selector(menuRename), enabled: single, action: .rename)
             add("복사", #selector(menuCopy), key: "c")
-            add("휴지통으로 이동", #selector(menuTrash), key: "\u{8}")
+            add("휴지통으로 이동", #selector(menuTrash), action: .trash)
             menu.addItem(.separator())
-            add("경로 복사", #selector(menuCopyPath), key: "c", flags: [.command, .option])
+            add("경로 복사", #selector(menuCopyPath), action: .copyPath)
             add("Finder에서 보기", #selector(menuReveal))
             let folders = host.selectedURLs.filter { SidebarModel.isFolder($0) }
             if !folders.isEmpty && folders.count == host.selectedURLs.count {
@@ -298,20 +320,27 @@ final class FileCommands: NSObject, NSMenuDelegate {
             // 빈 곳을 우클릭
             let canPaste = NSPasteboard.general.canReadObject(
                 forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true])
-            add("새 폴더", #selector(menuNewFolder), key: "n", flags: [.command, .shift])
+            add("새 폴더", #selector(menuNewFolder), action: .newFolder)
             add("붙여넣기", #selector(menuPaste), enabled: canPaste, key: "v")
             menu.addItem(.separator())
-            add("경로 복사", #selector(menuCopyPath), key: "c", flags: [.command, .option])
+            add("경로 복사", #selector(menuCopyPath), action: .copyPath)
             add("Finder에서 보기", #selector(menuReveal))
             add("이 폴더를 사이드바에 추가", #selector(menuAddToSidebar))
             menu.addItem(.separator())
             add(model?.showHidden == true ? "숨김 파일 가리기" : "숨김 파일 보기",
-                #selector(menuToggleHidden), key: ".", flags: [.command, .shift])
+                #selector(menuToggleHidden), action: .toggleHidden)
         }
     }
 
+    // shortcut: 메뉴 오른쪽에 보여 줄 단축키 (설정에서 바꾼 값)
     private func add(_ title: String, _ action: Selector, enabled: Bool = true,
-                     key: String = "", flags: NSEvent.ModifierFlags = .command) {
+                     key: String = "", flags: NSEvent.ModifierFlags = .command,
+                     action shortcut: ShortcutAction? = nil) {
+        var key = key, flags = flags
+        if let shortcut, let combo = ShortcutStore.shared.primary(for: shortcut) {
+            key = combo.menuKey
+            flags = combo.flags
+        }
         let item = NSMenuItem(title: title, action: action, keyEquivalent: key)
         item.keyEquivalentModifierMask = key.isEmpty ? [] : flags
         item.target = self
@@ -333,6 +362,115 @@ final class FileCommands: NSObject, NSMenuDelegate {
         guard let model else { return }
         let urls = host?.selectedURLs ?? []
         SidebarModel.shared.add(urls.isEmpty ? [model.currentURL] : urls)
+    }
+
+    // MARK: 다음으로 열기 ▸
+    // Finder와 같은 모양: 기본 앱(맨 위, "(기본)") → 구분선 → 다른 앱(이름순) → 구분선 → 기타…
+    // 여러 파일을 골랐으면 모두 열 수 있는 앱만 보여 줍니다.
+    // ("항상 이 앱으로 열기"는 나중에 넣을 수 있게 비워 둠)
+
+    private var openWithTargets: [URL] = []
+
+    private func addOpenWith(_ urls: [URL]) {
+        let files = urls.filter { !SidebarModel.isFolder($0) || $0.pathExtension == "app" }
+        guard !files.isEmpty, files.count == urls.count else { return }   // 폴더가 섞이면 넣지 않음
+        openWithTargets = files
+
+        let ws = NSWorkspace.shared
+        var common: [URL]? = nil
+        for file in files {
+            let apps = ws.urlsForApplications(toOpen: file).map { $0.standardizedFileURL }
+            common = common.map { prev in prev.filter { apps.contains($0) } } ?? apps
+        }
+        let defaultApp = ws.urlForApplication(toOpen: files[0])?.standardizedFileURL
+        let others = (common ?? [])
+            .filter { $0 != defaultApp }
+            .reduce(into: [URL]()) { list, url in            // 같은 앱이 여러 위치에 있으면 하나만
+                if !list.contains(where: { Self.appName($0) == Self.appName(url) }) { list.append(url) }
+            }
+            .sorted { Self.appName($0).localizedStandardCompare(Self.appName($1)) == .orderedAscending }
+
+        let sub = NSMenu()
+        sub.autoenablesItems = false
+        if let defaultApp, common?.contains(defaultApp) ?? false {
+            sub.addItem(appItem(defaultApp, title: Self.appName(defaultApp) + " (기본)"))
+            if !others.isEmpty { sub.addItem(.separator()) }
+        }
+        for app in others { sub.addItem(appItem(app, title: Self.appName(app))) }
+        if sub.numberOfItems > 0 { sub.addItem(.separator()) }
+        let other = NSMenuItem(title: "기타…", action: #selector(openWithOther), keyEquivalent: "")
+        other.target = self
+        sub.addItem(other)
+
+        let item = NSMenuItem(title: "다음으로 열기", action: nil, keyEquivalent: "")
+        item.submenu = sub
+        menu.addItem(item)
+    }
+
+    private func appItem(_ app: URL, title: String) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: #selector(openWithApp(_:)), keyEquivalent: "")
+        item.target = self
+        item.representedObject = app
+        let icon = NSWorkspace.shared.icon(forFile: app.path)
+        icon.size = NSSize(width: 16, height: 16)
+        item.image = icon
+        return item
+    }
+
+    private static func appName(_ app: URL) -> String {
+        FileManager.default.displayName(atPath: app.path)
+            .replacingOccurrences(of: ".app", with: "")
+    }
+
+    @objc private func openWithApp(_ sender: NSMenuItem) {
+        guard let app = sender.representedObject as? URL else { return }
+        open(openWithTargets, with: app)
+    }
+
+    @objc private func openWithOther() {
+        let files = openWithTargets
+        let panel = NSOpenPanel()
+        panel.title = "다음으로 열기"
+        panel.prompt = "열기"
+        panel.allowedContentTypes = [.application]
+        panel.directoryURL = URL(fileURLWithPath: "/Applications")
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.begin { [weak self] response in
+            guard response == .OK, let app = panel.url else { return }
+            self?.open(files, with: app)
+        }
+    }
+
+    private func open(_ files: [URL], with app: URL) {
+        let model = self.model
+        NSWorkspace.shared.open(files, withApplicationAt: app,
+                                configuration: NSWorkspace.OpenConfiguration()) { _, error in
+            guard let error else { return }
+            Task { @MainActor in
+                model?.errorMessage = "열지 못함: \(error.localizedDescription)"
+            }
+        }
+    }
+}
+
+// MARK: - 서비스 (우클릭 메뉴 맨 아래 "서비스 ▸")
+// 표·아이콘 보기가 "선택한 파일을 다른 앱에 넘겨줄 수 있다"고 macOS에 알리면,
+// 파일을 받는 다른 앱의 서비스와 사용자가 만든 단축어·빠른 동작이 Finder처럼 자동으로 붙습니다.
+// (반디집처럼 "Finder에서만"으로 정해 둔 서비스는 macOS가 보여 주지 않습니다)
+
+enum ServiceSupport {
+    static let sendTypes: [NSPasteboard.PasteboardType] = [.fileURL]
+
+    @MainActor static func register() {
+        NSApp.registerServicesMenuSendTypes(sendTypes, returnTypes: [])
+    }
+
+    // 선택한 파일 주소를 서비스에 넘겨줄 클립보드에 적기
+    static func write(_ urls: [URL], to pboard: NSPasteboard) -> Bool {
+        guard !urls.isEmpty else { return false }
+        pboard.clearContents()
+        return pboard.writeObjects(urls as [NSURL])
     }
 }
 

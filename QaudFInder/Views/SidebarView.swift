@@ -25,7 +25,8 @@ struct SidebarView: View {
                 .padding(.horizontal, 12)
                 .padding(.top, 8)
                 .padding(.bottom, 2)
-            SidebarTable(favorites: sidebar.favorites, activeURL: activePane.currentURL, onOpen: onOpen)
+            SidebarTable(favorites: sidebar.favorites, offline: sidebar.offline,
+                         activeURL: activePane.currentURL, onOpen: onOpen)
         }
     }
 }
@@ -34,6 +35,7 @@ struct SidebarView: View {
 
 private struct SidebarTable: NSViewRepresentable {
     var favorites: [URL]
+    var offline: Set<String>               // 연결 안 된 디스크의 즐겨찾기 → 흐리게
     var activeURL: URL
     var onOpen: (URL) -> Void
 
@@ -92,6 +94,7 @@ private struct SidebarTable: NSViewRepresentable {
         var parent: SidebarTable
         weak var table: NSTableView?
         private var shown: [URL] = []
+        private var shownOffline: Set<String> = []
 
         init(_ parent: SidebarTable) {
             self.parent = parent
@@ -99,8 +102,9 @@ private struct SidebarTable: NSViewRepresentable {
 
         func apply() {
             guard let table else { return }
-            if shown != parent.favorites {
+            if shown != parent.favorites || shownOffline != parent.offline {
                 shown = parent.favorites
+                shownOffline = parent.offline
                 table.reloadData()
             }
             // 활성 칸의 폴더와 같은 항목을 선택 표시
@@ -114,7 +118,9 @@ private struct SidebarTable: NSViewRepresentable {
         @objc func clicked(_ sender: NSTableView) {
             let row = sender.clickedRow
             guard row >= 0, row < shown.count else { return }
-            parent.onOpen(shown[row])
+            let url = shown[row]
+            guard SidebarModel.shared.canOpen(url) else { return }   // 사라졌거나 연결 안 된 폴더
+            parent.onOpen(url)
         }
 
         // MARK: 보여 줄 내용
@@ -125,9 +131,12 @@ private struct SidebarTable: NSViewRepresentable {
             let id = NSUserInterfaceItemIdentifier("favoriteCell")
             let cell = (tableView.makeView(withIdentifier: id, owner: nil) as? NSTableCellView) ?? Self.makeCell(id)
             let url = shown[row]
+            let isOffline = shownOffline.contains(url.standardizedFileURL.path)
             cell.textField?.stringValue = FileManager.default.displayName(atPath: url.path)
+            cell.textField?.textColor = isOffline ? .tertiaryLabelColor : .labelColor
             cell.imageView?.image = Self.symbol(for: url)
-            cell.toolTip = url.path
+            cell.imageView?.alphaValue = isOffline ? 0.4 : 1
+            cell.toolTip = isOffline ? url.path + " (연결되지 않은 디스크)" : url.path
             return cell
         }
 

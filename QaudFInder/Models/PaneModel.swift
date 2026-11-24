@@ -26,9 +26,12 @@ final class PaneModel: ObservableObject {
     @Published private(set) var focusRequest = 0     // 숫자가 바뀌면 목록이 키보드 포커스를 가져감
     @Published private(set) var showHidden: Bool     // 숨김 파일 보기 (⇧⌘., 칸별 저장)
     @Published private(set) var reloadCount = 0      // 새로고침할 때마다 +1 (펼친 하위 폴더도 다시 읽게)
-    // 아이콘 보기의 아이콘 크기 배율 (0.5 Small ~ 1 Normal ~ 1.5 Big ~ 2 Huge).
+    // 아이콘 보기의 아이콘 크기 배율 (0.5 Small ~ 1 Normal ~ 2 Big ~ 3 Huge).
     // 칸별로 적용하고, 앱을 다시 켜면 1(Normal)로 돌아감 → 저장하지 않음
-    @Published var iconScale: Double = 1.0
+    @Published var iconScale: Double = AppSettings.shared.iconScale      // 시작 값은 설정 창의 "기본 아이콘 크기"
+    // 아이콘 보기의 격자 간격 배율 (0.5 좁게 ~ 1 보통 ~ 1.5 넓게). 아이콘 크기와 같이 칸별, 저장 안 함
+    @Published var gridSpacing: Double = AppSettings.shared.gridSpacing  // 시작 값은 설정 창의 "기본 격자 간격"
+    @Published private(set) var pathEditRequest = 0  // 숫자가 바뀌면 위쪽 막대의 경로 입력칸이 열림 (⇧⌘G)
 
     private var backStack: [URL] = []
     private var forwardStack: [URL] = []
@@ -37,6 +40,7 @@ final class PaneModel: ObservableObject {
     private var sizeTask: Task<Void, Never>? = nil   // 폴더 용량 계산 (백그라운드)
     private var watcher: DispatchSourceFileSystemObject? = nil   // 폴더 변경 감시 (자동 새로고침)
     private var autoReloadTask: Task<Void, Never>? = nil
+    private var settingsWatch: AnyCancellable? = nil   // 설정(폴더 위로·확장자·용량 계산)이 바뀌면 다시 읽기
 
     // 열려 있는 모든 칸 (파일을 바꾼 뒤 같은 폴더를 보는 다른 칸도 새로고침하려고)
     private static let allPanes = NSHashTable<PaneModel>.weakObjects()
@@ -65,7 +69,7 @@ final class PaneModel: ObservableObject {
 
         // 지난번 보기 방식·정렬 기억
         let savedMode = defaults?.string(forKey: "pane\(index).viewMode")
-            .flatMap { ViewMode(rawValue: $0) } ?? .list
+            .flatMap { ViewMode(rawValue: $0) } ?? AppSettings.shared.newViewMode
         _viewMode = Published(initialValue: savedMode)
         let savedSort = defaults?.string(forKey: "pane\(index).sortKey")
             .flatMap { SortKey(rawValue: $0) } ?? .name
@@ -76,6 +80,9 @@ final class PaneModel: ObservableObject {
         PaneModel.allPanes.add(self)
         reload()
         startWatching()
+        settingsWatch = AppSettings.shared.$listRevision.dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.reload(keepError: true) }
     }
 
     // 사이드바 클릭, ⇧⌘G 창 닫기 뒤에 키보드 입력을 이 칸 목록으로 되돌릴 때
@@ -83,7 +90,36 @@ final class PaneModel: ObservableObject {
         focusRequest += 1
     }
 
+    // ⇧⌘G: 이 칸 위쪽 막대의 경로를 입력칸으로 바꿈
+    func requestPathEdit() {
+        pathEditRequest += 1
+    }
+
     // MARK: 이동
+
+    // 경로 입력칸에서 Return. 실패하면 안내 문구를 돌려줌
+    // - /Applications 처럼 전체 경로, ~/Documents 처럼 홈 기준 경로 모두 가능
+    // - 앞에 / 나 ~ 가 없으면 지금 폴더 기준으로 찾음
+    // - 파일 경로를 넣으면 그 파일이 있는 폴더로 가서 파일을 선택
+    func goTo(_ text: String) -> String? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "경로를 입력하세요." }
+        var path = (trimmed as NSString).expandingTildeInPath
+        if !path.hasPrefix("/") {
+            path = currentURL.appendingPathComponent(path).path
+        }
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            return "그런 폴더나 파일이 없습니다: \(url.path)"
+        }
+        if SidebarModel.isFolder(url) {
+            open(url)
+        } else {
+            open(url.deletingLastPathComponent())
+            setSelection([url], anchor: url)
+        }
+        return nil
+    }
 
     func open(_ url: URL) {
         guard url.standardizedFileURL.path != currentURL.standardizedFileURL.path else { return }
@@ -205,12 +241,13 @@ final class PaneModel: ObservableObject {
         items = sorted(items)
     }
 
-    // 폴더는 항상 위쪽, 그 안에서 정렬 기준대로. 값이 같으면 이름순.
+    // 폴더는 위쪽(설정 "폴더를 항상 위로", 기본 켬), 그 안에서 정렬 기준대로. 값이 같으면 이름순.
     private func sorted(_ list: [FileItem]) -> [FileItem] {
         let key = sortKey
         let ascending = sortAscending
+        let foldersFirst = AppSettings.shared.foldersFirst
         return list.sorted { a, b in
-            if a.isDirectory != b.isDirectory { return a.isDirectory }
+            if foldersFirst && a.isDirectory != b.isDirectory { return a.isDirectory }
             let result: ComparisonResult
             switch key {
             case .name:     result = a.name.localizedStandardCompare(b.name)
@@ -243,12 +280,13 @@ final class PaneModel: ObservableObject {
             includingPropertiesForKeys: keys,
             options: showHidden ? [] : [.skipsHiddenFiles]   // 숨김 파일은 ⇧⌘. 로 켰을 때만
         )
+        let showExtensions = AppSettings.shared.showExtensions   // 켜면 Finder 설정과 관계없이 확장자 표시
         return sorted(urls.map { u in
             let v = try? u.resourceValues(forKeys: Set(keys))
             let isDir = (v?.isDirectory ?? false) && !(v?.isPackage ?? false)
             return FileItem(
                 url: u,
-                name: v?.localizedName ?? u.lastPathComponent,
+                name: showExtensions ? u.lastPathComponent : (v?.localizedName ?? u.lastPathComponent),
                 isDirectory: isDir,
                 size: isDir ? nil : v?.fileSize.map { Int64($0) },
                 modified: v?.contentModificationDate,
@@ -296,6 +334,10 @@ final class PaneModel: ObservableObject {
 
     private func computeFolderSize() {
         sizeTask?.cancel()
+        guard AppSettings.shared.folderSize else {        // 설정에서 끔: 계산하지 않음
+            folderSizeText = ""
+            return
+        }
         folderSizeText = "계산 중…"
         let url = currentURL
         sizeTask = Task.detached(priority: .utility) { [weak self] in
@@ -370,6 +412,7 @@ final class PaneModel: ObservableObject {
             }
         }
         PaneModel.refreshPanes(showing: folders)
+        SidebarModel.shared.refresh()          // 즐겨찾기한 폴더를 휴지통으로 보냈으면 정리
         if !failed.isEmpty {
             errorMessage = "휴지통으로 옮기지 못함: " + failed.joined(separator: ", ")
         }
